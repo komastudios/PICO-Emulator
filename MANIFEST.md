@@ -11,7 +11,7 @@ This file separates repository-owned configuration from proprietary/large inputs
 - Experimental upstream SwiftShader base: `6b8d31709ad185dbd64e80865e830a9dbe8e7559` (not deployed)
 - Reported deployed host: PICO Emulator 0.7.6, build ID 2608240227, upstream base 33.1.16
 
-The modifications on top of those bases are maintained as fork branches on the `komastudios` forks listed under **Sources** in the [README](README.md); the branch tips below are the authoritative record.
+The modifications on top of those bases are maintained as fork branches on the `komastudios` forks listed under **Sources** in `README.md`; the branch tips below are the authoritative record.
 
 | Component | Fork branch | Tip | Reproduces the deployed binary |
 | --- | --- | --- | --- |
@@ -111,7 +111,7 @@ Lavapipe remains dynamically dependent on the distribution's LLVM, DRM, XCB, Way
 
 ## Repository-to-deployment mapping
 
-- `patches/`: exact source modifications, mirrored as fork branches (see **Sources** in the [README](README.md))
+- `patches/`: exact source modifications, mirrored as fork branches (see **Sources** in `README.md`)
 - `Containerfile`, `.containerignore`, `Taskfile.yml`: end-to-end container build; the deploy image contains the built binaries and runtime dependencies but no vendor blobs
 - `scripts/install-pico-emulator.sh`: idempotent host installer for the extracted package, its service user, and the three systemd units
 - `scripts/`: copied to `linux-pico-package/`

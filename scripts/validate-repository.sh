@@ -5,7 +5,7 @@ repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_dir"
 
 required=(
-  README.md REPRODUCIBILITY.md Taskfile.yml
+  README.md MANIFEST.md Taskfile.yml
   docs/build-pipeline.md docs/host-install.md
   patches/README.md
   Containerfile .containerignore

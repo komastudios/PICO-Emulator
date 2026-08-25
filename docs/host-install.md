@@ -1,6 +1,6 @@
 # Host install
 
-[`scripts/install-pico-emulator.sh`](../scripts/install-pico-emulator.sh) installs the package produced by `task build` onto a systemd host: the service user, the directory layout, the SDK symlinks, and three units. It is idempotent — re-running only updates what changed.
+`scripts/install-pico-emulator.sh` installs the package produced by `task build` onto a systemd host: the service user, the directory layout, the SDK symlinks, and three units. It is idempotent — re-running only updates what changed.
 
 ```bash
 task build                       # produces dist/linux-pico-package
@@ -52,7 +52,7 @@ The path is absolute because the AVD config points at it; the installer checks f
 | `android-adb.service` | the ADB server |
 | `pico-emulator.service` | the emulator itself, `After=` the other two |
 
-`pico-emulator.service` runs as `android:android` with supplementary groups `kvm` and `sitegroup`, `DISPLAY=:99`, and `PICO_*` variables pointing the start script at the state root, the AVD name and its seed. It starts [`scripts/start-pico-linux.sh`](../scripts/start-pico-linux.sh), which seeds the AVD if needed and launches the emulator with `-no-snapshot -no-boot-anim -writable-system`.
+`pico-emulator.service` runs as `android:android` with supplementary groups `kvm` and `sitegroup`, `DISPLAY=:99`, and `PICO_*` variables pointing the start script at the state root, the AVD name and its seed. It starts `scripts/start-pico-linux.sh`, which seeds the AVD if needed and launches the emulator with `-no-snapshot -no-boot-anim -writable-system`.
 
 If `/dev/kvm` is not readable and writable, the start script warns and falls back to `-accel off`, which is very slow. Add the service user to `kvm` instead.
 

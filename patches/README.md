@@ -1,6 +1,6 @@
 # Patch inventory
 
-These patches remain the authoritative record of the source modifications. Each is now **also** available as a branch on a fork — see **Sources** in the [top-level README](../README.md). Both routes produce identical trees; use whichever suits your workflow.
+These patches remain the authoritative record of the source modifications. Each is now **also** available as a branch on a fork — see **Sources** in `README.md`. Both routes produce identical trees; use whichever suits your workflow.
 
 | Patch | Apply in | Base commit | Equivalent fork branch | Status |
 | --- | --- | --- | --- | --- |
@@ -16,7 +16,7 @@ The required patches were captured directly from the source trees used to build 
 `pico-emulator-gfxstream-linux.patch` includes commit `3d7006f`, which dumps every SPIR-V shader module to `/var/lib/android/pico-shaders/` and logs descriptor-set bindings to stderr. That instrumentation is present in the deployed `libgfxstream_backend.so`, so the patch reproduces the deployed binary exactly — but it is not something you want to keep building.
 
 - To reproduce the **deployed** binary: apply the patch, or check out `pico-linux-debug`.
-- To build a **clean** host: check out `pico-linux`, or apply the patch and then revert `3d7006f`. The resulting `libgfxstream_backend.so` will not match the hash in [../REPRODUCIBILITY.md](../REPRODUCIBILITY.md).
+- To build a **clean** host: check out `pico-linux`, or apply the patch and then revert `3d7006f`. The resulting `libgfxstream_backend.so` will not match the hash in `MANIFEST.md`.
 
 ## Commit structure on the forks
 

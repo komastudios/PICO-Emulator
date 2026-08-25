@@ -1,6 +1,6 @@
 # Build pipeline
 
-The build is a single podman image build driven by [Taskfile.yml](../Taskfile.yml). It syncs the PICO emulator sources through `repo`, compiles the Linux host, and emits a self-contained package under `dist/`. No proprietary PICO content enters the image — see [Required proprietary input](../README.md#required-proprietary-input).
+The build is a single podman image build driven by `Taskfile.yml`. It syncs the PICO emulator sources through `repo`, compiles the Linux host, and emits a self-contained package under `dist/`. No proprietary PICO content enters the image — see **Required proprietary input** in `README.md`.
 
 ```
 task build            # sync + compile + deploy image + extract to dist/
@@ -11,13 +11,13 @@ task verify           # repository completeness, script syntax, units, file mode
 
 ## Stages
 
-The [Containerfile](../Containerfile) has four stages:
+The `Containerfile` has four stages:
 
 | Stage | What it does |
 | --- | --- |
 | `base` | Debian 13 layer shared by builder and deploy |
 | `builder` | toolchain: `repo`, git-lfs, cmake/ninja, and the qemu build dependencies |
-| `build` | runs [`scripts/container-build.sh`](../scripts/container-build.sh): `repo init` + `repo sync`, then `external/qemu/android/rebuild.sh`; emits the distribution tree to `/out` |
+| `build` | runs `scripts/container-build.sh`: `repo init` + `repo sync`, then `external/qemu/android/rebuild.sh`; emits the distribution tree to `/out` |
 | `deploy` | runtime image: the built binaries plus every runtime dependency |
 
 `task build` targets `deploy`, then runs `task extract`, which copies `/opt/android/PICO/linux-pico-package` out of the image into `dist/`, writes `.build-variant`, and records `SHA256SUMS` over the four binaries that matter (`emulator`, `qemu-system-x86_64`, `libgfxstream_backend.so`, `libvulkan_lvp.so`).
@@ -43,7 +43,7 @@ Without the `/cache` mount the build still works, but nothing is reused and the 
 
 ## Reproducible sync: the lock
 
-`repo` normally follows branch tips, so two syncs a day apart can produce different binaries. [`scripts/write-lock.py`](../scripts/write-lock.py) resolves everything to commits and writes:
+`repo` normally follows branch tips, so two syncs a day apart can produce different binaries. `scripts/write-lock.py` resolves everything to commits and writes:
 
 | File | Contents |
 | --- | --- |
@@ -85,4 +85,4 @@ PODMAN_FLAGS="--cgroup-manager=cgroupfs --events-backend=file" task build
 
 ## Where the sources come from
 
-Only two projects carry Linux-port changes; both are forks pinned by the manifest, and both are also mirrored as patch files under [`patches/`](../patches/README.md). See **Sources** in the [README](../README.md) for the fork URLs and branches.
+Only two projects carry Linux-port changes; both are forks pinned by the manifest, and both are also mirrored as patch files under `patches/`, inventoried in `patches/README.md`. See **Sources** in `README.md` for the fork URLs and branches.
