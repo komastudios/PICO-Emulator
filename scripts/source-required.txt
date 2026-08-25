@@ -4,7 +4,7 @@
 external/qemu/android/rebuild.sh
 external/qemu/android/build/toolchains.json
 prebuilts/clang/host/linux-x86/clang-r530567/bin/clang
-prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/x86_64-linux/lib64/libc.so.6
+prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/sysroot/usr/lib/libc.so.6
 prebuilts/android-emulator-build/qt/linux-x86_64/lib
 prebuilts/android-emulator-build/common/ANGLE/linux-x86_64/lib/libangle_st.so
 prebuilts/android-emulator-build/common/vulkan

@@ -48,6 +48,9 @@ while read -r p; do
 done < "$required_file"
 [ "$rc" -eq 0 ] || { printf 'Build failed: the trimmed tree lacks required inputs.\n' >&2; exit 1; }
 printf 'Required inputs present.\n'
+# The trim rules are part of the archive's identity, so the key is (re)written
+# here, after the sync stage's provisional value.
+printf '%s\n' "$key" > .pico-lock-key
 
 # --- archive ---------------------------------------------------------------
 # Deterministic: sorted members, fixed owner and mtime, no atime/ctime headers.
