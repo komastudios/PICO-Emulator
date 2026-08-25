@@ -1,0 +1,533 @@
+diff --git a/codegen/renderControl/renderControl.in b/codegen/renderControl/renderControl.in
+index 9fde4d8..0555d54 100644
+--- a/codegen/renderControl/renderControl.in
++++ b/codegen/renderControl/renderControl.in
+@@ -33,7 +33,7 @@ GL_ENTRY(void, rcFlushWindowColorBufferAsync, uint32_t windowSurface)
+ GL_ENTRY(int, rcDestroySyncKHR, uint64_t sync)
+ GL_ENTRY(void, rcSetPuid, uint64_t puid)
+ GL_ENTRY(int, rcUpdateColorBufferDMA, uint32_t colorbuffer, GLint x, GLint y, GLint width, GLint height, GLenum format, GLenum type, void* pixels, uint32_t pixels_size)
+-GL_ENTRY(uint32_t, rcCreateColorBufferDMA, uint32_t width, uint32_t height, uint32_t layer, GLenum internalFormat, int frameworkFormat)
++GL_ENTRY(uint32_t, rcCreateColorBufferDMA, uint32_t width, uint32_t height, uint32_t layer, GLenum androidFormat, GLenum internalFormat)
+ GL_ENTRY(void, rcWaitSyncKHR, uint64_t sync, EGLint flags);
+ GL_ENTRY(GLint, rcCompose, uint32_t bufferSize, void *buffer);
+ GL_ENTRY(int, rcCreateDisplay, uint32_t* displayId);
+diff --git a/guest/renderControl_enc/renderControl_client_proc.h b/guest/renderControl_enc/renderControl_client_proc.h
+index c6a03ae..b867588 100644
+--- a/guest/renderControl_enc/renderControl_client_proc.h
++++ b/guest/renderControl_enc/renderControl_client_proc.h
+@@ -24,7 +24,7 @@ typedef uint32_t (renderControl_APIENTRY *rcCreateContext_client_proc_t) (void *
+ typedef void (renderControl_APIENTRY *rcDestroyContext_client_proc_t) (void * ctx, uint32_t);
+ typedef uint32_t (renderControl_APIENTRY *rcCreateWindowSurface_client_proc_t) (void * ctx, uint32_t, uint32_t, uint32_t);
+ typedef void (renderControl_APIENTRY *rcDestroyWindowSurface_client_proc_t) (void * ctx, uint32_t);
+-typedef uint32_t (renderControl_APIENTRY *rcCreateColorBuffer_client_proc_t) (void * ctx, uint32_t, uint32_t, GLenum);
++typedef uint32_t (renderControl_APIENTRY *rcCreateColorBuffer_client_proc_t) (void * ctx, uint32_t, uint32_t, uint32_t, GLenum);
+ typedef void (renderControl_APIENTRY *rcOpenColorBuffer_client_proc_t) (void * ctx, uint32_t);
+ typedef void (renderControl_APIENTRY *rcCloseColorBuffer_client_proc_t) (void * ctx, uint32_t);
+ typedef void (renderControl_APIENTRY *rcSetWindowColorBuffer_client_proc_t) (void * ctx, uint32_t, uint32_t);
+@@ -47,7 +47,7 @@ typedef void (renderControl_APIENTRY *rcFlushWindowColorBufferAsync_client_proc_
+ typedef int (renderControl_APIENTRY *rcDestroySyncKHR_client_proc_t) (void * ctx, uint64_t);
+ typedef void (renderControl_APIENTRY *rcSetPuid_client_proc_t) (void * ctx, uint64_t);
+ typedef int (renderControl_APIENTRY *rcUpdateColorBufferDMA_client_proc_t) (void * ctx, uint32_t, GLint, GLint, GLint, GLint, GLenum, GLenum, void*, uint32_t);
+-typedef uint32_t (renderControl_APIENTRY *rcCreateColorBufferDMA_client_proc_t) (void * ctx, uint32_t, uint32_t, GLenum, int);
++typedef uint32_t (renderControl_APIENTRY *rcCreateColorBufferDMA_client_proc_t) (void * ctx, uint32_t, uint32_t, uint32_t, GLenum, GLenum);
+ typedef void (renderControl_APIENTRY *rcWaitSyncKHR_client_proc_t) (void * ctx, uint64_t, EGLint);
+ typedef GLint (renderControl_APIENTRY *rcCompose_client_proc_t) (void * ctx, uint32_t, void*);
+ typedef int (renderControl_APIENTRY *rcCreateDisplay_client_proc_t) (void * ctx, uint32_t*);
+@@ -60,7 +60,7 @@ typedef int (renderControl_APIENTRY *rcSetDisplayPose_client_proc_t) (void * ctx
+ typedef GLint (renderControl_APIENTRY *rcSetColorBufferVulkanMode_client_proc_t) (void * ctx, uint32_t, uint32_t);
+ typedef void (renderControl_APIENTRY *rcReadColorBufferYUV_client_proc_t) (void * ctx, uint32_t, GLint, GLint, GLint, GLint, void*, uint32_t);
+ typedef int (renderControl_APIENTRY *rcIsSyncSignaled_client_proc_t) (void * ctx, uint64_t);
+-typedef void (renderControl_APIENTRY *rcCreateColorBufferWithHandle_client_proc_t) (void * ctx, uint32_t, uint32_t, GLenum, uint32_t);
++typedef void (renderControl_APIENTRY *rcCreateColorBufferWithHandle_client_proc_t) (void * ctx, uint32_t, uint32_t, uint32_t, GLenum, uint32_t);
+ typedef uint32_t (renderControl_APIENTRY *rcCreateBuffer_client_proc_t) (void * ctx, uint32_t);
+ typedef void (renderControl_APIENTRY *rcCloseBuffer_client_proc_t) (void * ctx, uint32_t);
+ typedef GLint (renderControl_APIENTRY *rcSetColorBufferVulkanMode2_client_proc_t) (void * ctx, uint32_t, uint32_t, uint32_t);
+diff --git a/guest/renderControl_enc/renderControl_enc.cpp b/guest/renderControl_enc/renderControl_enc.cpp
+index ef8b0e1..a241a68 100644
+--- a/guest/renderControl_enc/renderControl_enc.cpp
++++ b/guest/renderControl_enc/renderControl_enc.cpp
+@@ -465,6 +465,7 @@ void rcDestroyContext_enc(void *self , uint32_t context)
+ 	if (useChecksum) checksumCalculator->addBuffer(buf, ptr-buf);
+ 	if (useChecksum) checksumCalculator->writeChecksum(ptr, checksumSize); ptr += checksumSize;
+ 
++	stream->flush();
+ }
+ 
+ uint32_t rcCreateWindowSurface_enc(void *self , uint32_t config, uint32_t width, uint32_t height)
+@@ -538,9 +539,9 @@ void rcDestroyWindowSurface_enc(void *self , uint32_t windowSurface)
+ 
+ }
+ 
+-uint32_t rcCreateColorBuffer_enc(void *self , uint32_t width, uint32_t height, GLenum internalFormat)
++uint32_t rcCreateColorBuffer_enc(void *self , uint32_t width, uint32_t height, uint32_t layer, GLenum internalFormat)
+ {
+-	ENCODER_DEBUG_LOG("rcCreateColorBuffer(width:0x%08x, height:0x%08x, internalFormat:0x%08x)", width, height, internalFormat);
++	ENCODER_DEBUG_LOG("rcCreateColorBuffer(width:0x%08x, height:0x%08x, layer:0x%08x, internalFormat:0x%08x)", width, height, layer, internalFormat);
+ 	AEMU_SCOPED_TRACE("rcCreateColorBuffer encode");
+ 
+ 	renderControl_encoder_context_t *ctx = (renderControl_encoder_context_t *)self;
+@@ -550,7 +551,7 @@ uint32_t rcCreateColorBuffer_enc(void *self , uint32_t width, uint32_t height, G
+ 
+ 	 unsigned char *ptr;
+ 	 unsigned char *buf;
+-	 const size_t sizeWithoutChecksum = 8 + 4 + 4 + 4;
++	 const size_t sizeWithoutChecksum = 8 + 4 + 4 + 4 + 4;
+ 	 const size_t checksumSize = checksumCalculator->checksumByteSize();
+ 	 const size_t totalSize = sizeWithoutChecksum + checksumSize;
+ 	buf = stream->alloc(totalSize);
+@@ -560,6 +561,7 @@ uint32_t rcCreateColorBuffer_enc(void *self , uint32_t width, uint32_t height, G
+ 
+ 		memcpy(ptr, &width, 4); ptr += 4;
+ 		memcpy(ptr, &height, 4); ptr += 4;
++		memcpy(ptr, &layer, 4); ptr += 4;
+ 		memcpy(ptr, &internalFormat, 4); ptr += 4;
+ 
+ 	if (useChecksum) checksumCalculator->addBuffer(buf, ptr-buf);
+@@ -663,6 +665,7 @@ void rcSetWindowColorBuffer_enc(void *self , uint32_t windowSurface, uint32_t co
+ 	if (useChecksum) checksumCalculator->addBuffer(buf, ptr-buf);
+ 	if (useChecksum) checksumCalculator->writeChecksum(ptr, checksumSize); ptr += checksumSize;
+ 
++	stream->flush();
+ }
+ 
+ int rcFlushWindowColorBuffer_enc(void *self , uint32_t windowSurface)
+@@ -830,6 +833,7 @@ void rcBindTexture_enc(void *self , uint32_t colorBuffer)
+ 	if (useChecksum) checksumCalculator->addBuffer(buf, ptr-buf);
+ 	if (useChecksum) checksumCalculator->writeChecksum(ptr, checksumSize); ptr += checksumSize;
+ 
++	stream->flush();
+ }
+ 
+ void rcBindRenderbuffer_enc(void *self , uint32_t colorBuffer)
+@@ -960,7 +964,12 @@ int rcUpdateColorBuffer_enc(void *self , uint32_t colorbuffer, GLint x, GLint y,
+ 	gfxstream::guest::ChecksumCalculator *checksumCalculator = ctx->m_checksumCalculator;
+ 	bool useChecksum = checksumCalculator->getVersion() > 0;
+ 
+-	const unsigned int __size_pixels =  (((glUtilsPixelBitSize(format, type) * width) >> 3) * height);
++	unsigned int __size_pixels = 0;
++	if (format == GL_SRGB8_ALPHA8_EXT && pixels == NULL) { // 0x8c43 GL_SRGB8_ALPHA8_EXT
++		__size_pixels = 0;
++	} else {
++		__size_pixels = (((glUtilsPixelBitSize(format, type) * width) >> 3) * height);
++	}
+ 	 unsigned char *ptr;
+ 	 unsigned char *buf;
+ 	 const size_t sizeWithoutChecksum = 8 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + __size_pixels + 1*4;
+@@ -1402,9 +1411,9 @@ int rcUpdateColorBufferDMA_enc(void *self , uint32_t colorbuffer, GLint x, GLint
+ 	return retval;
+ }
+ 
+-uint32_t rcCreateColorBufferDMA_enc(void *self , uint32_t width, uint32_t height, GLenum internalFormat, int frameworkFormat)
++uint32_t rcCreateColorBufferDMA_enc(void *self , uint32_t width, uint32_t height, uint32_t layer, GLenum androidFormat, GLenum internalFormat)
+ {
+-	ENCODER_DEBUG_LOG("rcCreateColorBufferDMA(width:0x%08x, height:0x%08x, internalFormat:0x%08x, frameworkFormat:%d)", width, height, internalFormat, frameworkFormat);
++	ENCODER_DEBUG_LOG("rcCreateColorBufferDMA(width:0x%08x, height:0x%08x, layer:0x%08x, androidFormat:0x%08x, internalFormat:0x%08x)", width, height, layer, androidFormat, internalFormat);
+ 	AEMU_SCOPED_TRACE("rcCreateColorBufferDMA encode");
+ 
+ 	renderControl_encoder_context_t *ctx = (renderControl_encoder_context_t *)self;
+@@ -1414,7 +1423,7 @@ uint32_t rcCreateColorBufferDMA_enc(void *self , uint32_t width, uint32_t height
+ 
+ 	 unsigned char *ptr;
+ 	 unsigned char *buf;
+-	 const size_t sizeWithoutChecksum = 8 + 4 + 4 + 4 + 4;
++	 const size_t sizeWithoutChecksum = 8 + 4 + 4 + 4 + 4 + 4;
+ 	 const size_t checksumSize = checksumCalculator->checksumByteSize();
+ 	 const size_t totalSize = sizeWithoutChecksum + checksumSize;
+ 	buf = stream->alloc(totalSize);
+@@ -1424,8 +1433,9 @@ uint32_t rcCreateColorBufferDMA_enc(void *self , uint32_t width, uint32_t height
+ 
+ 		memcpy(ptr, &width, 4); ptr += 4;
+ 		memcpy(ptr, &height, 4); ptr += 4;
++		memcpy(ptr, &layer, 4); ptr += 4;
++		memcpy(ptr, &androidFormat, 4); ptr += 4;
+ 		memcpy(ptr, &internalFormat, 4); ptr += 4;
+-		memcpy(ptr, &frameworkFormat, 4); ptr += 4;
+ 
+ 	if (useChecksum) checksumCalculator->addBuffer(buf, ptr-buf);
+ 	if (useChecksum) checksumCalculator->writeChecksum(ptr, checksumSize); ptr += checksumSize;
+@@ -1977,9 +1987,9 @@ int rcIsSyncSignaled_enc(void *self , uint64_t sync)
+ 	return retval;
+ }
+ 
+-void rcCreateColorBufferWithHandle_enc(void *self , uint32_t width, uint32_t height, GLenum internalFormat, uint32_t handle)
++void rcCreateColorBufferWithHandle_enc(void *self , uint32_t width, uint32_t height, uint32_t layer, GLenum internalFormat, uint32_t handle)
+ {
+-	ENCODER_DEBUG_LOG("rcCreateColorBufferWithHandle(width:0x%08x, height:0x%08x, internalFormat:0x%08x, handle:0x%08x)", width, height, internalFormat, handle);
++	ENCODER_DEBUG_LOG("rcCreateColorBufferWithHandle(width:0x%08x, height:0x%08x, layer:0x%08x, internalFormat:0x%08x, handle:0x%08x)", width, height, layer, internalFormat, handle);
+ 	AEMU_SCOPED_TRACE("rcCreateColorBufferWithHandle encode");
+ 
+ 	renderControl_encoder_context_t *ctx = (renderControl_encoder_context_t *)self;
+@@ -1989,7 +1999,7 @@ void rcCreateColorBufferWithHandle_enc(void *self , uint32_t width, uint32_t hei
+ 
+ 	 unsigned char *ptr;
+ 	 unsigned char *buf;
+-	 const size_t sizeWithoutChecksum = 8 + 4 + 4 + 4 + 4;
++	 const size_t sizeWithoutChecksum = 8 + 4 + 4 + 4 + 4 + 4;
+ 	 const size_t checksumSize = checksumCalculator->checksumByteSize();
+ 	 const size_t totalSize = sizeWithoutChecksum + checksumSize;
+ 	buf = stream->alloc(totalSize);
+@@ -1999,6 +2009,7 @@ void rcCreateColorBufferWithHandle_enc(void *self , uint32_t width, uint32_t hei
+ 
+ 		memcpy(ptr, &width, 4); ptr += 4;
+ 		memcpy(ptr, &height, 4); ptr += 4;
++		memcpy(ptr, &layer, 4); ptr += 4;
+ 		memcpy(ptr, &internalFormat, 4); ptr += 4;
+ 		memcpy(ptr, &handle, 4); ptr += 4;
+ 
+@@ -2305,6 +2316,7 @@ void rcSetTracingForPuid_enc(void *self , uint64_t puid, uint32_t enable, uint64
+ 	if (useChecksum) checksumCalculator->addBuffer(buf, ptr-buf);
+ 	if (useChecksum) checksumCalculator->writeChecksum(ptr, checksumSize); ptr += checksumSize;
+ 
++	stream->flush();
+ }
+ 
+ void rcMakeCurrentAsync_enc(void *self , uint32_t context, uint32_t drawSurf, uint32_t readSurf)
+diff --git a/guest/renderControl_enc/renderControl_entry.cpp b/guest/renderControl_enc/renderControl_entry.cpp
+index 859b004..2f56de9 100644
+--- a/guest/renderControl_enc/renderControl_entry.cpp
++++ b/guest/renderControl_enc/renderControl_entry.cpp
+@@ -17,7 +17,7 @@ extern "C" {
+ 	void rcDestroyContext(uint32_t context);
+ 	uint32_t rcCreateWindowSurface(uint32_t config, uint32_t width, uint32_t height);
+ 	void rcDestroyWindowSurface(uint32_t windowSurface);
+-	uint32_t rcCreateColorBuffer(uint32_t width, uint32_t height, GLenum internalFormat);
++	uint32_t rcCreateColorBuffer(uint32_t width, uint32_t height, uint32_t layer, GLenum internalFormat);
+ 	void rcOpenColorBuffer(uint32_t colorbuffer);
+ 	void rcCloseColorBuffer(uint32_t colorbuffer);
+ 	void rcSetWindowColorBuffer(uint32_t windowSurface, uint32_t colorBuffer);
+@@ -40,7 +40,7 @@ extern "C" {
+ 	int rcDestroySyncKHR(uint64_t sync);
+ 	void rcSetPuid(uint64_t puid);
+ 	int rcUpdateColorBufferDMA(uint32_t colorbuffer, GLint x, GLint y, GLint width, GLint height, GLenum format, GLenum type, void* pixels, uint32_t pixels_size);
+-	uint32_t rcCreateColorBufferDMA(uint32_t width, uint32_t height, GLenum internalFormat, int frameworkFormat);
++	uint32_t rcCreateColorBufferDMA(uint32_t width, uint32_t height, uint32_t layer, GLenum androidFormat, GLenum internalFormat);
+ 	void rcWaitSyncKHR(uint64_t sync, EGLint flags);
+ 	GLint rcCompose(uint32_t bufferSize, void* buffer);
+ 	int rcCreateDisplay(uint32_t* displayId);
+@@ -53,7 +53,7 @@ extern "C" {
+ 	GLint rcSetColorBufferVulkanMode(uint32_t colorBuffer, uint32_t mode);
+ 	void rcReadColorBufferYUV(uint32_t colorbuffer, GLint x, GLint y, GLint width, GLint height, void* pixels, uint32_t pixels_size);
+ 	int rcIsSyncSignaled(uint64_t sync);
+-	void rcCreateColorBufferWithHandle(uint32_t width, uint32_t height, GLenum internalFormat, uint32_t handle);
++	void rcCreateColorBufferWithHandle(uint32_t width, uint32_t height, uint32_t layer, GLenum internalFormat, uint32_t handle);
+ 	uint32_t rcCreateBuffer(uint32_t size);
+ 	void rcCloseBuffer(uint32_t buffer);
+ 	GLint rcSetColorBufferVulkanMode2(uint32_t colorBuffer, uint32_t mode, uint32_t memoryProperty);
+@@ -155,10 +155,10 @@ void rcDestroyWindowSurface(uint32_t windowSurface)
+ 	ctx->rcDestroyWindowSurface(ctx, windowSurface);
+ }
+ 
+-uint32_t rcCreateColorBuffer(uint32_t width, uint32_t height, GLenum internalFormat)
++uint32_t rcCreateColorBuffer(uint32_t width, uint32_t height, uint32_t layer, GLenum internalFormat)
+ {
+ 	GET_CONTEXT;
+-	return ctx->rcCreateColorBuffer(ctx, width, height, internalFormat);
++	return ctx->rcCreateColorBuffer(ctx, width, height, layer, internalFormat);
+ }
+ 
+ void rcOpenColorBuffer(uint32_t colorbuffer)
+@@ -293,10 +293,10 @@ int rcUpdateColorBufferDMA(uint32_t colorbuffer, GLint x, GLint y, GLint width,
+ 	return ctx->rcUpdateColorBufferDMA(ctx, colorbuffer, x, y, width, height, format, type, pixels, pixels_size);
+ }
+ 
+-uint32_t rcCreateColorBufferDMA(uint32_t width, uint32_t height, GLenum internalFormat, int frameworkFormat)
++uint32_t rcCreateColorBufferDMA(uint32_t width, uint32_t height, uint32_t layer, GLenum androidFormat, GLenum internalFormat)
+ {
+ 	GET_CONTEXT;
+-	return ctx->rcCreateColorBufferDMA(ctx, width, height, internalFormat, frameworkFormat);
++	return ctx->rcCreateColorBufferDMA(ctx, width, height, layer, androidFormat, internalFormat);
+ }
+ 
+ void rcWaitSyncKHR(uint64_t sync, EGLint flags)
+@@ -371,10 +371,10 @@ int rcIsSyncSignaled(uint64_t sync)
+ 	return ctx->rcIsSyncSignaled(ctx, sync);
+ }
+ 
+-void rcCreateColorBufferWithHandle(uint32_t width, uint32_t height, GLenum internalFormat, uint32_t handle)
++void rcCreateColorBufferWithHandle(uint32_t width, uint32_t height, uint32_t layer, GLenum internalFormat, uint32_t handle)
+ {
+ 	GET_CONTEXT;
+-	ctx->rcCreateColorBufferWithHandle(ctx, width, height, internalFormat, handle);
++	ctx->rcCreateColorBufferWithHandle(ctx, width, height, layer, internalFormat, handle);
+ }
+ 
+ uint32_t rcCreateBuffer(uint32_t size)
+diff --git a/host/ColorBuffer.cpp b/host/ColorBuffer.cpp
+index 7f42004..26a46f0 100644
+--- a/host/ColorBuffer.cpp
++++ b/host/ColorBuffer.cpp
+@@ -136,6 +136,7 @@ void ColorBuffer::defferImportMemory()
+ #if GFXSTREAM_ENABLE_HOST_GLES
+ 
+     if (mColorBufferGl && mColorBufferVk &&
++        mColorBufferVk->getEmulationVk().isGlInteropSupported() &&
+         mGlAndVkAreSharingExternalMemory == false &&
+         mFrameworkFormat == FrameworkFormat::FRAMEWORK_FORMAT_GL_COMPATIBLE) {
+         auto memoryExport = mColorBufferVk->getEmulationVk().exportColorBufferMemory(mHandle);
+diff --git a/host/FrameBuffer.cpp b/host/FrameBuffer.cpp
+index 6dc980d..03c7c7e 100644
+--- a/host/FrameBuffer.cpp
++++ b/host/FrameBuffer.cpp
+@@ -482,19 +482,12 @@ bool FrameBuffer::initialize(int width, int height, gfxstream::host::FeatureSet
+     fb->m_vulkanInteropSupported = vulkanInteropSupported;
+     GL_LOG("interop? %d", fb->m_vulkanInteropSupported);
+ 
+-    // Force enable memory object on Win/Linux
+-// #if defined(_WIN32) || defined(__linux__)
+-    fb->m_vulkanInteropSupported = true;
+-// #endif
+-
+ #if GFXSTREAM_ENABLE_HOST_GLES
+     if (vulkanInteropSupported && fb->m_emulationGl && fb->m_emulationGl->isMesa()) {
+         // Mesa currently expects dedicated allocations for external memory sharing
+         // between GL and VK. See b/265186355.
+         vkEmulationFeatures.useDedicatedAllocations = true;
+     }
+-    // Force useDedicatedAllocations
+-    vkEmulationFeatures.useDedicatedAllocations = true;
+ #endif
+ 
+     GL_LOG("glvk interop final: %d", fb->m_vulkanInteropSupported);
+diff --git a/host/RenderControl.cpp b/host/RenderControl.cpp
+index 91b58ca..335f6b0 100644
+--- a/host/RenderControl.cpp
++++ b/host/RenderControl.cpp
+@@ -818,7 +818,7 @@ static void rcDestroyWindowSurface(uint32_t windowSurface)
+ }
+ 
+ static uint32_t rcCreateColorBuffer(uint32_t width,
+-                                    uint32_t height, 
++                                    uint32_t height,
+                                     uint32_t layer,
+                                     GLenum internalFormat)
+ {
+@@ -834,8 +834,8 @@ static uint32_t rcCreateColorBuffer(uint32_t width,
+ static uint32_t rcCreateColorBufferDMA(uint32_t width,
+                                        uint32_t height,
+                                        uint32_t layer,
+-                                       GLenum internalFormat,
+-                                       int frameworkFormat)
++                                       GLenum androidFormat,
++                                       GLenum internalFormat)
+ {
+     FrameBuffer *fb = FrameBuffer::getFB();
+     if (!fb) {
+@@ -843,7 +843,7 @@ static uint32_t rcCreateColorBufferDMA(uint32_t width,
+     }
+ 
+     return fb->createColorBuffer(width, height, layer, internalFormat,
+-                                 (FrameworkFormat)frameworkFormat);
++                                 FRAMEWORK_FORMAT_GL_COMPATIBLE);
+ }
+ 
+ static int rcOpenColorBuffer2(uint32_t colorbuffer)
+diff --git a/host/gl/ColorBufferGl.cpp b/host/gl/ColorBufferGl.cpp
+index 57e0e96..645365d 100644
+--- a/host/gl/ColorBufferGl.cpp
++++ b/host/gl/ColorBufferGl.cpp
+@@ -126,6 +126,15 @@ static bool sGetFormatParameters(GLint* internalFormat,
+     *isBlob = false;
+ 
+     switch (*internalFormat) {
++        // Android 16 can pass AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM
++        // directly instead of a GL internal-format enum.
++        case 1:
++            *internalFormat = GL_RGBA;
++            *texFormat = GL_RGBA;
++            *pixelType = GL_UNSIGNED_BYTE;
++            *bytesPerPixel = 4;
++            *sizedInternalFormat = GL_RGBA8;
++            return true;
+         case GL_RGB:
+         case GL_RGB8:
+             *texFormat = GL_RGB;
+diff --git a/host/gl/EmulatedEglFenceSync.cpp b/host/gl/EmulatedEglFenceSync.cpp
+index 58f822d..8943b68 100644
+--- a/host/gl/EmulatedEglFenceSync.cpp
++++ b/host/gl/EmulatedEglFenceSync.cpp
+@@ -58,19 +58,11 @@ class Timeline {
+     }
+ 
+     void sweep() {
+-        mFences.eraseIf([time = mTime.load()](EmulatedEglFenceSync* fence, int fenceTime) {
+-            EmulatedEglFenceSync* actual = EmulatedEglFenceSync::getFromHandle((uint64_t)(uintptr_t)fence);
+-            if (!actual) return true;
+-
+-            bool shouldErase = fenceTime <= time;
+-            if (shouldErase) {
+-                if (!actual->decRef() &&
+-                    actual->shouldDestroyWhenSignaled()) {
+-                    actual->decRef();
+-                }
+-            }
+-            return shouldErase;
+-        });
++        // PICO's software Vulkan stack may still be executing work for an EGL
++        // fence when the generic 16-timeline heuristic expires. Deleting the
++        // wrapper here races that work and corrupts the host allocator. Keep
++        // fence wrappers alive until emulator shutdown; this is bounded for an
++        // emulator session and is safer than asynchronous reclamation.
+     }
+ 
+   private:
+diff --git a/host/renderControl_dec/renderControl_dec.cpp b/host/renderControl_dec/renderControl_dec.cpp
+index 52761a8..fcfff6b 100644
+--- a/host/renderControl_dec/renderControl_dec.cpp
++++ b/host/renderControl_dec/renderControl_dec.cpp
+@@ -748,8 +748,8 @@ size_t renderControl_decoder_context_t::decode(void *buf, size_t len, IOStream *
+ 			uint32_t var_width = Unpack<uint32_t,uint32_t>(ptr + 8);
+ 			uint32_t var_height = Unpack<uint32_t,uint32_t>(ptr + 8 + 4);
+ 			uint32_t var_layer = Unpack<uint32_t,uint32_t>(ptr + 8 + 4 + 4);
+-			GLenum var_internalFormat = Unpack<GLenum,uint32_t>(ptr + 8 + 4 + 4 + 4);
+-			int var_frameworkFormat = Unpack<int,uint32_t>(ptr + 8 + 4 + 4 + 4 + 4);
++			GLenum var_androidFormat = Unpack<GLenum,uint32_t>(ptr + 8 + 4 + 4 + 4);
++			GLenum var_internalFormat = Unpack<GLenum,uint32_t>(ptr + 8 + 4 + 4 + 4 + 4);
+ 			if (useChecksum) {
+ 				ChecksumCalculatorThreadInfo::validOrDie(checksumCalc, ptr, 8 + 4 + 4 + 4 + 4 + 4, ptr + 8 + 4 + 4 + 4 + 4 + 4, checksumSize,
+ 					"renderControl_decoder_context_t::decode, OP_rcCreateColorBufferDMA: GL checksumCalculator failure\n");
+@@ -757,8 +757,8 @@ size_t renderControl_decoder_context_t::decode(void *buf, size_t len, IOStream *
+ 			size_t totalTmpSize = sizeof(uint32_t);
+ 			totalTmpSize += checksumSize;
+ 			unsigned char *tmpBuf = stream->alloc(totalTmpSize);
+-			DECODER_DEBUG_LOG("renderControl(%p): rcCreateColorBufferDMA(width:0x%08x height:0x%08x layer:0x%08x internalFormat:0x%08x frameworkFormat:%d )", stream, var_width, var_height, var_layer, var_internalFormat, var_frameworkFormat);
+-			*(uint32_t *)(&tmpBuf[0]) = 			this->rcCreateColorBufferDMA(var_width, var_height, var_layer, var_internalFormat, var_frameworkFormat);
++			DECODER_DEBUG_LOG("renderControl(%p): rcCreateColorBufferDMA(width:0x%08x height:0x%08x layer:0x%08x androidFormat:0x%08x internalFormat:0x%08x )", stream, var_width, var_height, var_layer, var_androidFormat, var_internalFormat);
++			*(uint32_t *)(&tmpBuf[0]) = 			this->rcCreateColorBufferDMA(var_width, var_height, var_layer, var_androidFormat, var_internalFormat);
+ 			if (useChecksum) {
+ 				ChecksumCalculatorThreadInfo::writeChecksum(checksumCalc, &tmpBuf[0], totalTmpSize - checksumSize, &tmpBuf[totalTmpSize - checksumSize], checksumSize);
+ 			}
+diff --git a/host/renderControl_dec/renderControl_server_proc.h b/host/renderControl_dec/renderControl_server_proc.h
+index 773f63b..f5b0939 100644
+--- a/host/renderControl_dec/renderControl_server_proc.h
++++ b/host/renderControl_dec/renderControl_server_proc.h
+@@ -47,7 +47,7 @@ typedef void (renderControl_APIENTRY *rcFlushWindowColorBufferAsync_server_proc_
+ typedef int (renderControl_APIENTRY *rcDestroySyncKHR_server_proc_t) (uint64_t);
+ typedef void (renderControl_APIENTRY *rcSetPuid_server_proc_t) (uint64_t);
+ typedef int (renderControl_APIENTRY *rcUpdateColorBufferDMA_server_proc_t) (uint32_t, GLint, GLint, GLint, GLint, GLenum, GLenum, void*, uint32_t);
+-typedef uint32_t (renderControl_APIENTRY *rcCreateColorBufferDMA_server_proc_t) (uint32_t, uint32_t, uint32_t, GLenum, int);
++typedef uint32_t (renderControl_APIENTRY *rcCreateColorBufferDMA_server_proc_t) (uint32_t, uint32_t, uint32_t, GLenum, GLenum);
+ typedef void (renderControl_APIENTRY *rcWaitSyncKHR_server_proc_t) (uint64_t, EGLint);
+ typedef GLint (renderControl_APIENTRY *rcCompose_server_proc_t) (uint32_t, void*);
+ typedef int (renderControl_APIENTRY *rcCreateDisplay_server_proc_t) (uint32_t*);
+diff --git a/host/vulkan/VkCommonOperations.cpp b/host/vulkan/VkCommonOperations.cpp
+index 4f8f432..5eacc47 100644
+--- a/host/vulkan/VkCommonOperations.cpp
++++ b/host/vulkan/VkCommonOperations.cpp
+@@ -2313,6 +2313,11 @@ bool VkEmulation::importExternalMemory(VulkanDispatch* vk, VkDevice targetDevice
+ 
+ static VkFormat glFormat2VkFormat(GLint internalFormat) {
+     switch (internalFormat) {
++        // PICO OS 6 / Android 16 may pass
++        // AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM directly here rather than
++        // the equivalent GL_RGBA/GL_RGBA8 enum.
++        case 1:
++            return VK_FORMAT_R8G8B8A8_UNORM;
+         case GL_R8:
+         case GL_LUMINANCE:
+             return VK_FORMAT_R8_UNORM;
+diff --git a/host/vulkan/VkCommonOperations.h b/host/vulkan/VkCommonOperations.h
+index 06c99bb..16125e9 100644
+--- a/host/vulkan/VkCommonOperations.h
++++ b/host/vulkan/VkCommonOperations.h
+@@ -99,6 +99,8 @@ class VkEmulation {
+     };
+     void initFeatures(Features features);
+ 
++    bool isGlInteropSupported() const { return mDeviceInfo.glInteropSupported; }
++
+     bool isYcbcrEmulationEnabled() const;
+ 
+     bool isEtc2EmulationEnabled() const;
+diff --git a/host/vulkan/VkDecoderGlobalState.cpp b/host/vulkan/VkDecoderGlobalState.cpp
+index e0099c2..56c994b 100644
+--- a/host/vulkan/VkDecoderGlobalState.cpp
++++ b/host/vulkan/VkDecoderGlobalState.cpp
+@@ -14,6 +14,8 @@
+ #include "VkDecoderGlobalState.h"
+ 
+ #include <algorithm>
++#include <atomic>
++#include <cstdio>
+ #include <functional>
+ #include <list>
+ #include <memory>
+@@ -137,6 +139,7 @@ using gfxstream::VulkanInfo;
+ #define STREAM_BLOB_FLAG_CREATE_GUEST_HANDLE 8
+ 
+ #define SPV_OP_DECORATE 71
++#define SPV_OP_MEMBER_DECORATE 72
+ #define SPV_DECORATION_RELAXED_PRECISION 0
+ 
+ #define VALIDATE_REQUIRED_HANDLE(parameter) \
+@@ -4902,6 +4905,13 @@ bool validateQueueInfos(
+                     continue;
+                 }
+             }
++            if (opcode == SPV_OP_MEMBER_DECORATE && wordCount >= 4) {
++                uint32_t decoration = *(ptr + 3);
++                if (decoration == SPV_DECORATION_RELAXED_PRECISION) {
++                    ptr += wordCount;
++                    continue;
++                }
++            }
+             newSpirv.insert(newSpirv.end(), ptr, ptr + wordCount);
+             ptr += wordCount;
+         }
+@@ -4914,11 +4924,29 @@ bool validateQueueInfos(
+         createInfo.pCode = newSpirv.data();
+         pNewCreateInfo = &createInfo;
+ #endif
++        // Persist the exact SPIR-V passed to the host Vulkan driver.  This is
++        // intentionally best-effort and is used to diagnose PICO spatial
++        // shaders which crash SwiftShader during pipeline compilation.
++        static std::atomic<uint64_t> sShaderDumpIndex{0};
++        const uint64_t shaderDumpIndex = sShaderDumpIndex.fetch_add(1);
++        char shaderDumpPath[256];
++        snprintf(shaderDumpPath, sizeof(shaderDumpPath),
++                 "/var/lib/android/pico-shaders/shader-%06llu.spv",
++                 static_cast<unsigned long long>(shaderDumpIndex));
++        if (FILE* shaderDump = fopen(shaderDumpPath, "wb")) {
++            fwrite(pNewCreateInfo->pCode, 1, pNewCreateInfo->codeSize, shaderDump);
++            fclose(shaderDump);
++        }
+         VkResult result =
+             deviceDispatch->vkCreateShaderModule(device, pNewCreateInfo, pAllocator, pShaderModule);
+         if (result != VK_SUCCESS) {
+             return result;
+         }
++        if (FILE* shaderMap = fopen("/var/lib/android/pico-shaders/modules.log", "a")) {
++            fprintf(shaderMap, "%llu %p\n", static_cast<unsigned long long>(shaderDumpIndex),
++                    reinterpret_cast<void*>(*pShaderModule));
++            fclose(shaderMap);
++        }
+ 
+         std::lock_guard<std::mutex> lock(mMutex);
+ 
+@@ -5112,6 +5140,15 @@ bool validateQueueInfos(
+         auto device = unbox_VkDevice(boxed_device);
+         auto deviceDispatch = dispatch_VkDevice(boxed_device);
+ 
++        if (FILE* computeLog = fopen("/var/lib/android/pico-shaders/compute.log", "a")) {
++            for (uint32_t i = 0; i < createInfoCount; ++i) {
++                fprintf(computeLog, "%p %s\n",
++                        reinterpret_cast<void*>(pCreateInfos[i].stage.module),
++                        pCreateInfos[i].stage.pName ? pCreateInfos[i].stage.pName : "<null>");
++            }
++            fclose(computeLog);
++        }
++
+         VkResult result = deviceDispatch->vkCreateComputePipelines(
+             device, pipelineCache, createInfoCount, pCreateInfos, pAllocator, pPipelines);
+         if (result != VK_SUCCESS && result != VK_PIPELINE_COMPILE_REQUIRED) {
+@@ -8094,6 +8131,11 @@ bool validateQueueInfos(
+                                     uint32_t dynamicOffsetCount, const uint32_t* pDynamicOffsets) {
+         auto commandBuffer = unbox_VkCommandBuffer(boxed_commandBuffer);
+         auto vk = dispatch_VkCommandBuffer(boxed_commandBuffer);
++        if (firstSet + descriptorSetCount > 4) {
++            fprintf(stderr,
++                    "PICO vkCmdBindDescriptorSets: firstSet=%u count=%u dynamicOffsets=%u\n",
++                    firstSet, descriptorSetCount, dynamicOffsetCount);
++        }
+         vk->vkCmdBindDescriptorSets(commandBuffer, pipelineBindPoint, layout, firstSet,
+                                     descriptorSetCount, pDescriptorSets, dynamicOffsetCount,
+                                     pDynamicOffsets);

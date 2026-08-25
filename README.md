@@ -6,9 +6,9 @@ The repository contains only build recipes, scripts and configuration. It ships 
 
 ## Required proprietary input
 
-`pico_emulator_oversea_20260731_v6.0.0_win.zip` from
-`https://lf-developer.picovr.com/obj/spatial-toolbox-mycis/oversea/emulator/pico_emulator_oversea_20260731_v6.0.0_win.zip`
-(SHA-256 `61efdf8191ee09e65d75edd3c180b74b83544cd7146a8403bac28c5d15bd2f1c`). Only its API 36 guest image (`…/system-images/system-images/`) is used; the Windows host binaries are not.
+PICO's Windows emulator package `pico_emulator_oversea_20260731_v6.0.0_win.zip`
+(SHA-256 `61efdf8191ee09e65d75edd3c180b74b83544cd7146a8403bac28c5d15bd2f1c`), obtained from PICO —
+see [Install PICO Emulator](https://developer.picoxr.com/document/spatial-toolkit/install-pico-emulator/). Only its API 36 guest image (`…/system-images/system-images/`) is used; the Windows host binaries are not.
 
 ## Quick start
 

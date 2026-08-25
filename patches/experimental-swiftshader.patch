@@ -1,0 +1,75 @@
+diff --git a/src/Pipeline/SpirvShader.cpp b/src/Pipeline/SpirvShader.cpp
+index 7dc5804..d34eb28 100644
+--- a/src/Pipeline/SpirvShader.cpp
++++ b/src/Pipeline/SpirvShader.cpp
+@@ -538,10 +538,6 @@ Spirv::Spirv(
+ 			UNSUPPORTED("SPIR-V Int16 or Int64 Capability (OpSConvert)");
+ 			break;
+ 
+-		case spv::OpUConvert:
+-			UNSUPPORTED("SPIR-V Int16 or Int64 Capability (OpUConvert)");
+-			break;
+-
+ 		case spv::OpLoad:
+ 		case spv::OpAccessChain:
+ 		case spv::OpInBoundsAccessChain:
+@@ -661,6 +657,7 @@ Spirv::Spirv(
+ 		case spv::OpConvertFToS:
+ 		case spv::OpConvertSToF:
+ 		case spv::OpConvertUToF:
++		case spv::OpUConvert:
+ 		case spv::OpBitcast:
+ 		case spv::OpSelect:
+ 		case spv::OpIsInf:
+diff --git a/src/Pipeline/SpirvShader.hpp b/src/Pipeline/SpirvShader.hpp
+index 63c6f42..46582a2 100644
+--- a/src/Pipeline/SpirvShader.hpp
++++ b/src/Pipeline/SpirvShader.hpp
+@@ -903,7 +903,10 @@ public:
+ 	const Object &getObject(Object::ID id) const
+ 	{
+ 		auto it = defs.find(id);
+-		ASSERT_MSG(it != defs.end(), "Unknown object %d", id.value());
++		if(it == defs.end())
++		{
++			abort("SwiftShader: unknown SPIR-V object %d", id.value());
++		}
+ 		return it->second;
+ 	}
+ 
+diff --git a/src/Pipeline/SpirvShaderArithmetic.cpp b/src/Pipeline/SpirvShaderArithmetic.cpp
+index 031bbcb..d84e2d9 100644
+--- a/src/Pipeline/SpirvShaderArithmetic.cpp
++++ b/src/Pipeline/SpirvShaderArithmetic.cpp
+@@ -263,6 +263,9 @@ void SpirvEmitter::EmitUnaryOp(Spirv::InsnIterator insn)
+ 		case spv::OpConvertUToF:
+ 			dst.move(i, SIMD::Float(src.UInt(i)));
+ 			break;
++		case spv::OpUConvert:
++			dst.move(i, src.UInt(i));
++			break;
+ 		case spv::OpBitcast:
+ 			dst.move(i, src.Float(i));
+ 			break;
+@@ -754,4 +757,4 @@ SIMD::UInt SpirvEmitter::AddSat(RValue<SIMD::UInt> a, RValue<SIMD::UInt> b)
+ 	return CmpLT(sum, a) | sum;
+ }
+ 
+-}  // namespace sw
+\ No newline at end of file
++}  // namespace sw
+diff --git a/src/Vulkan/VkConfig.hpp b/src/Vulkan/VkConfig.hpp
+index cc4e3b9..d3f71dc 100644
+--- a/src/Vulkan/VkConfig.hpp
++++ b/src/Vulkan/VkConfig.hpp
+@@ -79,7 +79,9 @@ static_assert(MAX_IMAGE_LEVELS_2D <= sw::MIPMAP_LEVELS);
+ static_assert(MAX_IMAGE_LEVELS_3D <= sw::MIPMAP_LEVELS);
+ static_assert(MAX_IMAGE_LEVELS_CUBE <= sw::MIPMAP_LEVELS);
+ 
+-constexpr uint32_t MAX_BOUND_DESCRIPTOR_SETS = 4;
++// PICO Spatial's compositor uses five descriptor sets. Adreno devices expose
++// more than Vulkan's minimum of four, so match that capability in software.
++constexpr uint32_t MAX_BOUND_DESCRIPTOR_SETS = 8;
+ constexpr uint32_t MAX_VERTEX_INPUT_BINDINGS = 16;
+ constexpr uint32_t MAX_PUSH_CONSTANT_SIZE = 128;
+ constexpr uint32_t MAX_UPDATE_AFTER_BIND_DESCRIPTORS = 500000;

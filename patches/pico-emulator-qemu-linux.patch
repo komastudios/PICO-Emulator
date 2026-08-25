@@ -1,0 +1,283 @@
+diff --git a/android-qemu2-glue/main.cpp b/android-qemu2-glue/main.cpp
+index dd5805bd..c75e8c77 100644
+--- a/android-qemu2-glue/main.cpp
++++ b/android-qemu2-glue/main.cpp
+@@ -1598,7 +1598,11 @@ static SnapshotCompatibleType checkCompatable(std::string srcAvdDir,
+ #ifndef __APPLE__
+ static int calculateHoundiniExpiredDate() {
+     std::string date;
+-    getConsoleAgents()->emu->getHoudiniExpireDate((void* )&date);
++    const auto* agents = getConsoleAgents();
++    if (!agents || !agents->emu || !agents->emu->getHoudiniExpireDate) {
++        return 30;
++    }
++    agents->emu->getHoudiniExpireDate((void* )&date);
+     if(date.empty()) {
+         return 30;
+     }
+@@ -3626,11 +3630,16 @@ extern "C" int main(int argc, char** argv) {
+     // start event tracker app
+     bool isReleaseVerion =
+             std::string(EMULATOR_VERSION_IS_RELEASE) == "1" ? true : false;
+-    tracking_event_init(EMULATOR_VERSION_STRING_SHORT,
+-                        getConsoleAgents()->emu->isOversea(), isReleaseVerion,
+-                        getConsoleAgents()->emu->isSpaceOS());
+-
+-    std::string sn = tracking_event_deviceSn(getConsoleAgents()->emu->isOversea());
++    const auto* consoleAgents = getConsoleAgents();
++    const auto* emuAgent = consoleAgents ? consoleAgents->emu : nullptr;
++    const bool isOversea =
++            emuAgent && emuAgent->isOversea && emuAgent->isOversea();
++    const bool isSpaceOs =
++            emuAgent && emuAgent->isSpaceOS && emuAgent->isSpaceOS();
++    tracking_event_init(EMULATOR_VERSION_STRING_SHORT, isOversea,
++                        isReleaseVerion, isSpaceOs);
++
++    std::string sn = tracking_event_deviceSn(isOversea);
+     boot_property_add("qemu.deviceid", sn.c_str());
+     std::string userid = System::get()->envGet("PICO_DEVELOPER_USERID");
+ 
+@@ -3642,7 +3651,7 @@ extern "C" int main(int argc, char** argv) {
+     boot_property_add("qemu.devid", userid.c_str());
+     System::get()->envSet("PICO_DEVELOPER_USERID", "");
+ 
+-    if (getConsoleAgents()->emu->isSwanRom()) {
++    if (emuAgent && emuAgent->isSwanRom && emuAgent->isSwanRom()) {
+         dinfo("[SwanEmulator] density is 320\n");
+         boot_property_add("qemu.sf.lcd_density", "320");
+     } else {
+diff --git a/android-qemu2-glue/qemu-picoemu-agent-impl.cpp b/android-qemu2-glue/qemu-picoemu-agent-impl.cpp
+index 4fb87b06..fab67f54 100644
+--- a/android-qemu2-glue/qemu-picoemu-agent-impl.cpp
++++ b/android-qemu2-glue/qemu-picoemu-agent-impl.cpp
+@@ -40,10 +40,8 @@ static void set_guest_picoemu_callback(const char* name,
+ static void set_guest_picoemu_contents(const char* name,
+                                        const uint8_t* buf,
+                                        size_t len) {
+-    const auto pipe = android::emulation::PicoemuPipeManager::getPicoPipe(name);
+-    if (pipe) {
+-        pipe->sendGuestPicoemuContents(buf, len);
+-    }
++    android::emulation::PicoemuPipeManager::sendGuestPicoemuContents(name, buf,
++                                                                     len);
+ }
+ 
+ static const QAndroidPicoemuAgent picoemuAgent = {
+diff --git a/android/android-emu/android/main-common.c b/android/android-emu/android/main-common.c
+index 8b0088ad..43d045ec 100644
+--- a/android/android-emu/android/main-common.c
++++ b/android/android-emu/android/main-common.c
+@@ -795,8 +795,13 @@ static bool emulator_handleCommonEmulatorOptions(AndroidOptions* opts,
+ 
+         int status = verify_signature(NULL, imageverifySigFile, imageverifyFile);
+         if(status != 1) {
+-            derror("verify signature fail");
+-            return false;
++            const char* allowUnverifiedImage = getenv("PICO_ALLOW_UNVERIFIED_IMAGE");
++            if (!allowUnverifiedImage || strcmp(allowUnverifiedImage, "1") != 0) {
++                derror("verify signature fail");
++                return false;
++            }
++            dwarning("PICO image signature key is not recognized; continuing because "
++                     "PICO_ALLOW_UNVERIFIED_IMAGE=1 (per-image SHA-256 checks remain enabled)");
+         } else {
+             D("verify sinatrue success\n");
+         }
+diff --git a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/bottom-tool-window.cpp b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/bottom-tool-window.cpp
+index 6c974d3a..43fc1193 100644
+--- a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/bottom-tool-window.cpp
++++ b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/bottom-tool-window.cpp
+@@ -95,7 +95,7 @@ void BottomToolWindow::switchTrackingMode(int mode) {
+ void BottomToolWindow::initButtonsStatus() {
+     // defult mode: right controller mode
+     dinfo("%s", __FUNCTION__);
+-    emit mControllerMenu->actions().at(2)->triggered(true);
++    emit mControllerMenu->actions().at(1)->triggered(true);
+ }
+ 
+ void BottomToolWindow::updateTheme(const QString& styleSheet) {
+diff --git a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-hmd-simulator.cpp b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-hmd-simulator.cpp
+index 11ac4e5c..5855cd76 100644
+--- a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-hmd-simulator.cpp
++++ b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-hmd-simulator.cpp
+@@ -81,6 +81,17 @@ PicoHMDSimulator::PicoHMDSimulator(EmulatorQtWindow* emulatorWindow,
+     mMovementTimer->setInterval(kMinFrameIntervalMs);
+     QObject::connect(mMovementTimer, &QTimer::timeout, this,
+                      &PicoHMDSimulator::updateMovement);
++
++    // Keep a current pose available even while the virtual headset is still.
++    // The Spatial runtime treats a one-shot startup sample as stale and keeps
++    // 6DoF tracking stopped, whereas mouse/key input naturally generates a
++    // continuous stream in an interactive session.
++    mPoseTimer = new QTimer(this);
++    mPoseTimer->setTimerType(Qt::PreciseTimer);
++    mPoseTimer->setInterval(kMinFrameIntervalMs);
++    QObject::connect(mPoseTimer, &QTimer::timeout, this,
++                     &PicoHMDSimulator::sendHmdPoseToGuest);
++    mPoseTimer->start();
+ }
+ 
+ PicoHMDSimulator::~PicoHMDSimulator() {}
+@@ -611,4 +622,4 @@ void PicoHMDSimulator::updateMovement() {
+         mOrbitCenterPoint = mHmdPosition + kOrbitRadius * mFrontDir;
+         sendHmdPoseToGuest();
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-hmd-simulator.h b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-hmd-simulator.h
+index 4e32c9af..4c0a7116 100644
+--- a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-hmd-simulator.h
++++ b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-hmd-simulator.h
+@@ -99,6 +99,7 @@ private:
+     EmulatorQtWindow* mEmulatorWindow = nullptr;
+     PicoUiCommandHandle* mCommandHandle = nullptr;
+     QTimer* mMovementTimer = nullptr;
++    QTimer* mPoseTimer = nullptr;
+ 
+     /* PICO Camera 硬件参数 */
+     float mHorizontalFov = 90.f;  // camera horizontal fov, degrees
+@@ -134,8 +135,10 @@ private:
+     float mTiltPitchAngle = 0.f;
+     QQuaternion mTiltBaseRotation;
+ 
+-    XrDeviceState mHmdState;
+-    XrDeviceState mLastHmdState;
++    // Every field is transmitted to the guest. Value-initialize the IMU terms
++    // so the first pose never contains allocator/ASan poison.
++    XrDeviceState mHmdState{};
++    XrDeviceState mLastHmdState{};
+ 
+     QPoint mLastLeftMousePos;
+     QPoint mLastMiddleMousePos;
+@@ -145,4 +148,4 @@ private:
+     const QSet<int> mMovementKeys{
+             Qt::Key_W,    Qt::Key_S,    Qt::Key_A,     Qt::Key_D, Qt::Key_Up,
+             Qt::Key_Down, Qt::Key_Left, Qt::Key_Right, Qt::Key_Q, Qt::Key_E};
+-};
+\ No newline at end of file
++};
+diff --git a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-ui-command-handle.cpp b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-ui-command-handle.cpp
+index 1b455f28..a6a0aefe 100644
+--- a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-ui-command-handle.cpp
++++ b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-ui-command-handle.cpp
+@@ -445,4 +445,4 @@ void PicoUiCommandHandle::runAdbCommand(const std::string& tag,
+                 std::cout << std::endl;
+             },
+             android::base::System::kInfinite);
+-}
+\ No newline at end of file
++}
+diff --git a/android/emu/crashreport/src/android/crashreport/CrashSytemInit.cpp b/android/emu/crashreport/src/android/crashreport/CrashSytemInit.cpp
+index bbd43af3..24b605ca 100644
+--- a/android/emu/crashreport/src/android/crashreport/CrashSytemInit.cpp
++++ b/android/emu/crashreport/src/android/crashreport/CrashSytemInit.cpp
+@@ -119,7 +119,12 @@ public:
+             mDatabase->GetSettings()->SetUploadsEnabled(true);
+         }
+ 
+-        std::string oversea = getConsoleAgents()->emu->isOversea() ? "1" : "0";
++        const auto* agents = getConsoleAgents();
++        std::string oversea =
++                (agents && agents->emu && agents->emu->isOversea &&
++                 agents->emu->isOversea())
++                        ? "1"
++                        : "0";
+         std::string isOverSea = std::string("--is_oversea=") + oversea;
+         bool active = mClient->StartHandler(handler_path, mDatabasePath,
+                                             metrics_path, CrashURL, annotations,
+diff --git a/android/emu/hardware/include/android/emulation/PicoemuPipe.h b/android/emu/hardware/include/android/emulation/PicoemuPipe.h
+index 8e8d009b..f5cbec5a 100644
+--- a/android/emu/hardware/include/android/emulation/PicoemuPipe.h
++++ b/android/emu/hardware/include/android/emulation/PicoemuPipe.h
+@@ -144,6 +144,9 @@ public:
+     PicoemuPipeManager();
+     ~PicoemuPipeManager();
+     static void AddPicoemuPipe(const char* service_name, PicoemuPipe* pipe);
++    static void sendGuestPicoemuContents(const char* service_name,
++                                         const uint8_t* buf,
++                                         size_t len);
+     static PicoemuPipe* getPicoPipe(const char* service_name);
+     static void closePicoPipe(PicoemuPipe* pipe);
+     static void setEnabled(bool enabled);
+@@ -157,6 +160,7 @@ public:
+ 
+ private:
+     static std::unordered_map<std::string, PicoemuPipe*> sPicoPipeMap;
++    static std::unordered_map<std::string, std::vector<uint8_t>> sPendingMap;
+     static std::mutex sPicoPipeMapLock;
+     static std::unordered_map<std::string,
+                               std::vector<PicoemuPipe::GuestPicoemuCallback>>
+diff --git a/android/emu/hardware/src/android/emulation/PicoemuPipe.cpp b/android/emu/hardware/src/android/emulation/PicoemuPipe.cpp
+index 69aede5d..1c26d9e2 100644
+--- a/android/emu/hardware/src/android/emulation/PicoemuPipe.cpp
++++ b/android/emu/hardware/src/android/emulation/PicoemuPipe.cpp
+@@ -36,6 +36,8 @@ namespace emulation {
+ bool PicoemuPipeManager::sPipeEnabled = false;
+ std::unordered_map<std::string, PicoemuPipe*> PicoemuPipeManager::sPicoPipeMap =
+         {};
++std::unordered_map<std::string, std::vector<uint8_t>>
++        PicoemuPipeManager::sPendingMap = {};
+ std::mutex PicoemuPipeManager::sPicoPipeMapLock;
+ std::unordered_map<std::string, std::vector<PicoemuPipe::GuestPicoemuCallback>>
+         PicoemuPipeManager::sCallbackMap = {};
+@@ -177,10 +179,6 @@ std::string PicoemuToHexString(const uint8_t* binary, size_t len) {
+ }
+ 
+ void PicoemuPipe::sendGuestPicoemuContents(const uint8_t* buf, size_t len) {
+-    if (!PicoemuPipeManager::isEnabled()) {
+-        return;  // who cares.
+-    }
+-
+     LOG(DEBUG) << "Picoemu update, host->guest, value='"
+                << PicoemuToHexString(buf, len) << "'";
+ 
+@@ -283,6 +281,48 @@ void PicoemuPipeManager::AddPicoemuPipe(const char* service_name,
+                                         PicoemuPipe* pipe) {
+     std::lock_guard<std::mutex> lock(sPicoPipeMapLock);
+     sPicoPipeMap[service_name] = pipe;
++    auto pending = sPendingMap.find(service_name);
++    if (pending != sPendingMap.end()) {
++        pipe->sendGuestPicoemuContents(pending->second.data(),
++                                       pending->second.size());
++        sPendingMap.erase(pending);
++    } else if (std::string_view(service_name) == "emusixdof") {
++        // The Swan guest performs a blocking-size read immediately after
++        // opening this pipe.  Seed a neutral XrDeviceState (168 bytes) so the
++        // first read cannot observe PIPE_ERROR_AGAIN as an EOF.
++        std::array<uint8_t, 168> neutral{};
++        const int64_t timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
++                                          std::chrono::system_clock::now()
++                                                  .time_since_epoch())
++                                          .count();
++        const double identityW = 1.0;
++        std::memcpy(neutral.data() + 8, &timestamp, sizeof(timestamp));
++        std::memcpy(neutral.data() + 40, &identityW, sizeof(identityW));
++        pipe->sendGuestPicoemuContents(neutral.data(), neutral.size());
++    } else if (std::string_view(service_name) == "emuqtcommand") {
++        // The regular interactive UI sends this after receiving
++        // PICO_SERVICE_STARTED.  A service-managed emulator can miss that
++        // UI handshake, leaving SystemXrStatusController in
++        // tracking_6dof_stopped forever.  Select controller tracking with the
++        // right controller, matching the UI defaults.
++        const std::array<int32_t, 2> startControllerTracking = {1, 1};
++        pipe->sendGuestPicoemuContents(
++                reinterpret_cast<const uint8_t*>(
++                        startControllerTracking.data()),
++                sizeof(startControllerTracking));
++    }
++}
++
++void PicoemuPipeManager::sendGuestPicoemuContents(const char* service_name,
++                                                  const uint8_t* buf,
++                                                  size_t len) {
++    std::lock_guard<std::mutex> lock(sPicoPipeMapLock);
++    auto pipe = sPicoPipeMap.find(service_name);
++    if (pipe != sPicoPipeMap.end()) {
++        pipe->second->sendGuestPicoemuContents(buf, len);
++    } else {
++        sPendingMap[service_name].assign(buf, buf + len);
++    }
+ }
+ 
+ PicoemuPipe* PicoemuPipeManager::getPicoPipe(const char* service_name) {

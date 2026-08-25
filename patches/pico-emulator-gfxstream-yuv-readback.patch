@@ -1,0 +1,131 @@
+From c7cdba8b081bfd29a89f300fb5358ed7add03b6c Mon Sep 17 00:00:00 2001
+From: Urs Hanselmann <git@hanselmann.io>
+Date: Tue, 25 Aug 2026 15:59:12 +0200
+Subject: [PATCH] Derive YUV framework format from the Android buffer format
+ and guard YUV readback against a missing converter
+
+---
+ host/ColorBuffer.cpp      |  7 ++++++-
+ host/RenderControl.cpp    | 20 +++++++++++++++++++-
+ host/gl/ColorBufferGl.cpp | 26 ++++++++++++++++++++++++--
+ 3 files changed, 49 insertions(+), 4 deletions(-)
+
+diff --git a/host/ColorBuffer.cpp b/host/ColorBuffer.cpp
+index 26a46f0..95a3719 100644
+--- a/host/ColorBuffer.cpp
++++ b/host/ColorBuffer.cpp
+@@ -14,6 +14,8 @@
+ 
+ #include "ColorBuffer.h"
+ 
++#include <cstring>
++
+ #if GFXSTREAM_ENABLE_HOST_GLES
+ #include "gl/EmulationGl.h"
+ #endif
+@@ -244,7 +246,10 @@ void ColorBuffer::readYuvToBytes(int x, int y, int width, int height, void* outP
+ 
+ #if GFXSTREAM_ENABLE_HOST_GLES
+     if (mColorBufferGl) {
+-        mColorBufferGl->readPixelsYUVCached(x, y, width, height, outPixels, outPixelsSize);
++        if (!mColorBufferGl->readPixelsYUVCached(x, y, width, height, outPixels, outPixelsSize) &&
++            outPixels && outPixelsSize) {
++            memset(outPixels, 0, outPixelsSize);
++        }
+         return;
+     }
+ #endif
+diff --git a/host/RenderControl.cpp b/host/RenderControl.cpp
+index 335f6b0..fc17924 100644
+--- a/host/RenderControl.cpp
++++ b/host/RenderControl.cpp
+@@ -831,6 +831,24 @@ static uint32_t rcCreateColorBuffer(uint32_t width,
+                                  FRAMEWORK_FORMAT_GL_COMPATIBLE);
+ }
+ 
++// The PICO OS 6 (API 36) guest sends the Android buffer format (an
++// AHardwareBuffer_Format / HAL_PIXEL_FORMAT value) rather than a gfxstream
++// FrameworkFormat. It is the only field that tells the host whether the
++// buffer is YUV, which decides whether a YUVConverter is created and hence
++// whether rcReadColorBufferYUV (MediaCodec / screenrecord) can be served.
++static FrameworkFormat frameworkFormatFromAndroidFormat(GLenum androidFormat) {
++    switch (androidFormat) {
++        case 0x32315659:  // HAL_PIXEL_FORMAT_YV12
++            return FRAMEWORK_FORMAT_YV12;
++        case 0x23:        // AHARDWAREBUFFER_FORMAT_Y8Cb8Cr8_420 / HAL_PIXEL_FORMAT_YCbCr_420_888
++            return FRAMEWORK_FORMAT_YUV_420_888;
++        case 0x36:        // AHARDWAREBUFFER_FORMAT_YCbCr_P010
++            return FRAMEWORK_FORMAT_P010;
++        default:
++            return FRAMEWORK_FORMAT_GL_COMPATIBLE;
++    }
++}
++
+ static uint32_t rcCreateColorBufferDMA(uint32_t width,
+                                        uint32_t height,
+                                        uint32_t layer,
+@@ -843,7 +861,7 @@ static uint32_t rcCreateColorBufferDMA(uint32_t width,
+     }
+ 
+     return fb->createColorBuffer(width, height, layer, internalFormat,
+-                                 FRAMEWORK_FORMAT_GL_COMPATIBLE);
++                                 frameworkFormatFromAndroidFormat(androidFormat));
+ }
+ 
+ static int rcOpenColorBuffer2(uint32_t colorbuffer)
+diff --git a/host/gl/ColorBufferGl.cpp b/host/gl/ColorBufferGl.cpp
+index 645365d..7c27342 100644
+--- a/host/gl/ColorBufferGl.cpp
++++ b/host/gl/ColorBufferGl.cpp
+@@ -744,9 +744,23 @@ bool ColorBufferGl::readPixelsYUVCached(int x, int y, int width, int height, voi
+     fprintf(stderr, "%s %d request width %d height %d\n", __func__, __LINE__,
+             width, height);
+     memset(pixels, 0x00, pixels_size);
+-    assert(m_yuv_converter.get());
+ #endif
+ 
++    // A guest can request a YUV readback of any color buffer handle; only
++    // buffers created with a YUV framework format own a converter. Refuse
++    // instead of crashing the whole emulator on a null converter.
++    if (!m_yuv_converter) {
++        ERR("ColorBuffer %u: YUV readback requested on a non-YUV buffer (framework format %d)",
++            mHndl, static_cast<int>(m_frameworkFormat));
++        return false;
++    }
++    const uint32_t requiredSize = m_yuv_converter->getDataSize();
++    if (!pixels || pixels_size < requiredSize) {
++        ERR("ColorBuffer %u: YUV readback buffer too small (%u < %u)", mHndl, pixels_size,
++            requiredSize);
++        return false;
++    }
++
+     m_yuv_converter->readPixels((uint8_t*)pixels, pixels_size);
+ 
+     return true;
+@@ -825,6 +839,10 @@ void ColorBufferGl::reformat(GLint internalformat, GLenum type) {
+ }
+ 
+ void ColorBufferGl::swapYUVTextures(FrameworkFormat type, uint32_t* textures, void* metadata) {
++    if (!m_yuv_converter) {
++        ERR("ColorBuffer %u: swapYUVTextures on a non-YUV buffer", mHndl);
++        return;
++    }
+     if (type == FrameworkFormat::FRAMEWORK_FORMAT_NV12) {
+         m_yuv_converter->swapTextures(type, textures, metadata);
+     } else {
+@@ -871,7 +889,11 @@ bool ColorBufferGl::subUpdateFromFrameworkFormat(int x, int y, int width, int he
+ 
+     if (p_format != GL_SRGB8_ALPHA8) {
+         if (m_frameworkFormat != FRAMEWORK_FORMAT_GL_COMPATIBLE || fwkFormat != m_frameworkFormat) {
+-            assert(m_yuv_converter.get());
++            if (!m_yuv_converter) {
++                ERR("ColorBuffer %u: YUV update (format %d) on a non-YUV buffer", mHndl,
++                    static_cast<int>(fwkFormat));
++                return false;
++            }
+ 
+             // This FBO will convert the YUV frame to RGB
+             // and render it to |m_tex|.
+-- 
+2.47.3
+
