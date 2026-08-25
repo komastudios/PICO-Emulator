@@ -1,0 +1,13 @@
+# The build context only needs scripts/ and config/. Everything else is
+# excluded — sessions/ alone is ~80 MB of agent transcripts.
+*
+
+!scripts/
+!config/
+
+# Nothing generated or proprietary, even under the allowed directories.
+**/*.img
+**/*.zip
+**/.DS_Store
+**/__pycache__/
+.cache/

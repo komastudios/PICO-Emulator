@@ -1,0 +1,26 @@
+[Unit]
+Description=Virtual X display for the PICO emulator
+After=local-fs.target
+
+[Service]
+Type=simple
+User=android
+Group=android
+Environment=HOME=/var/lib/android
+ExecStart=/usr/bin/Xvfb :99 -screen 0 2880x1440x24 -nolisten tcp -noreset -ac
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/tmp
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

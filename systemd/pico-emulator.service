@@ -1,0 +1,57 @@
+[Unit]
+Description=PICO Android emulator
+Requires=android-adb.service pico-display.service
+After=android-adb.service pico-display.service
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=exec
+User=android
+Group=android
+SupplementaryGroups=kvm sitegroup
+WorkingDirectory=/opt/android/PICO/linux-pico-package
+Environment=HOME=/var/lib/android
+Environment=DISPLAY=:99
+Environment=PICO_STATE_DIR=/var/lib/android
+Environment=PICO_AVD_NAME=Pico_36_Linux
+Environment=PICO_AVD_TARGET=android-36
+Environment=PICO_AVD_SEED=/opt/android/PICO/linux-pico-package/avd-api36
+Environment=PICO_ALLOW_UNVERIFIED_IMAGE=1
+Environment=PICO_GPU_MODE=angle_indirect
+Environment=ANGLE_DEFAULT_PLATFORM=vulkan
+Environment=ANDROID_EMU_VK_ICD=swiftshader
+Environment=VK_ICD_FILENAMES=/opt/android/PICO/linux-pico-package/picoemulator/lib64/vulkan/vk_swiftshader_icd.json
+Environment=LD_LIBRARY_PATH=/opt/android/PICO/linux-pico-package/picoemulator/lib64/gles_angle_pico_linux
+Environment=TMPDIR=/var/lib/android/tmp
+Environment=PICO_BOOT_TIMEOUT=180
+Environment=ADB_VENDOR_KEYS=/var/lib/android/.android/adbkey
+Environment=ADB_MDNS_AUTO_CONNECT=0
+Environment=ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL=20
+RuntimeDirectory=pico-emulator
+RuntimeDirectoryMode=0700
+Environment=XDG_RUNTIME_DIR=/run/pico-emulator
+ExecStartPre=/opt/android/PICO/linux-pico-package/wait-pico-display.sh
+ExecStartPre=/opt/android/PICO/sdk/emulator/emulator-check accel
+ExecStart=/opt/android/PICO/linux-pico-package/start-pico-linux.sh
+ExecStartPost=/opt/android/PICO/linux-pico-package/wait-pico-boot.sh
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGINT
+TimeoutStartSec=240
+TimeoutStopSec=40
+NoNewPrivileges=true
+PrivateDevices=false
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+ReadOnlyPaths=/opt/android/PICO
+ReadWritePaths=/var/lib/android /run/pico-emulator
+BindPaths=/var/lib/android/tmp/android-android:/tmp/android-android
+
+[Install]
+WantedBy=multi-user.target

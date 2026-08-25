@@ -1,0 +1,30 @@
+[Unit]
+Description=Persistent Android Debug Bridge server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=android
+Group=android
+Environment=HOME=/var/lib/android
+Environment=ADB_VENDOR_KEYS=/var/lib/android/.android/adbkey
+Environment=ADB_MDNS_AUTO_CONNECT=0
+ExecStart=/opt/android/PICO/sdk/platform-tools/adb -a -L tcp:5037 server nodaemon
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/android
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,7 @@
+.cache/
+dist/
+local/
+.task/
+.env
+.env.local
+*.log
