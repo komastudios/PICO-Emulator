@@ -48,6 +48,23 @@ vars:
   # Bump to force a re-sync and recompile even with a warm cache.
   CACHE_BUST: '{{.CACHE_BUST | default "0"}}'
   BUILD_FLAGS: '{{.BUILD_FLAGS | default ""}}'
+  # Staged pipeline (see docs/build-pipeline.md, "Stages and promotion").
+  # LOCK_KEY names the trimmed source archive: a content hash of the lock, the
+  # pins and the trim rules. BUILDER_KEY names the toolchain image.
+  LOCK_KEY:
+    sh: cat '{{.ROOT_DIR}}/revisions{{if eq (.DEBUG | default "0") "1"}}-debug{{end}}.lock' '{{.ROOT_DIR}}/manifests/pins{{if eq (.DEBUG | default "0") "1"}}-debug{{end}}.xml' '{{.ROOT_DIR}}/scripts/source-trim.txt' '{{.ROOT_DIR}}/scripts/source-required.txt' '{{.ROOT_DIR}}/scripts/build-sync.sh' '{{.ROOT_DIR}}/scripts/build-trim.sh' 2>/dev/null | sha256sum | cut -c1-16
+  BUILDER_KEY:
+    sh: sh -c "sed -n '/^FROM base AS builder/,/^# -* build/p' '{{.ROOT_DIR}}/Containerfile'; printf '%s' '{{.DEBIAN_IMAGE}}'" | sha256sum | cut -c1-16
+  REGISTRY: '{{.REGISTRY | default "ghcr.io/komastudios"}}'
+  SOURCES_REF: '{{.SOURCES_REF | default (printf "%s/pico-emulator-sources:%s" .REGISTRY .LOCK_KEY)}}'
+  BUILDER_REF: '{{.BUILDER_REF | default (printf "%s/pico-emulator-builder:%s" .REGISTRY .BUILDER_KEY)}}'
+  # The toolchain image the compile stage starts from: the local builder stage
+  # by default, or a pulled image reference (BUILDER_IMAGE=ghcr.io/...@sha256:...).
+  BUILDER_IMAGE: '{{.BUILDER_IMAGE | default "builder"}}'
+  SOURCE_ARCHIVE: '{{.SOURCE_ARCHIVE | default (printf "%s/sources-%s.tar.zst" .CACHE_DIR .LOCK_KEY)}}'
+  SYNC_DEPTH: '{{.SYNC_DEPTH | default ""}}'
+  SYNC_PARTIAL: '{{.SYNC_PARTIAL | default "0"}}'
+  ZSTD_LEVEL: '{{.ZSTD_LEVEL | default "12"}}'
   # Guest image directory to bind-mount for `task run`. Must be the extracted
   # system-images directory from the vendor archive; see README.md.
   SYSTEM_IMAGES: '{{.SYSTEM_IMAGES | default ""}}'
@@ -148,6 +165,130 @@ tasks:
     cmds:
       - scripts/write-lock.py --check
       - scripts/write-lock.py --debug --check
+
+  lock:key:
+    desc: Print the content keys that name the promoted stage artifacts
+    silent: true
+    cmds:
+      - printf 'LOCK_KEY=%s\nBUILDER_KEY=%s\nSOURCES_REF=%s\nBUILDER_REF=%s\n' '{{.LOCK_KEY}}' '{{.BUILDER_KEY}}' '{{.SOURCES_REF}}' '{{.BUILDER_REF}}'
+
+  sources:
+    desc: "Stage 1: sync the locked manifest, trim to Linux inputs, archive to CACHE_DIR"
+    preconditions:
+      - sh: test -n '{{.MANIFEST_REV}}'
+        msg: "The sources stage needs a lock; run `task lock` first."
+    cmds:
+      - mkdir -p '{{.CACHE_DIR}}'
+      - >
+        {{.PODMAN}} {{.PODMAN_FLAGS}} build
+        --file Containerfile
+        --target sources
+        --tag {{.IMAGE}}-sources:{{.TAG}}
+        --volume '{{.CACHE_DIR}}:/cache:z'
+        --build-arg DEBIAN_IMAGE={{.DEBIAN_IMAGE}}
+        --build-arg MANIFEST_URL={{.MANIFEST_URL}}
+        --build-arg MANIFEST_BRANCH={{.MANIFEST_BRANCH}}
+        --build-arg MANIFEST_FILE={{.MANIFEST_FILE}}
+        --build-arg MANIFEST_REV={{.MANIFEST_REV}}
+        --build-arg LOCK_FILE=/opt/pico/{{.LOCK_FILE}}
+        --build-arg PINS_FILE=/opt/pico/{{.PINS_FILE}}
+        --build-arg SOURCE_DATE_EPOCH={{.SOURCE_DATE_EPOCH}}
+        --build-arg LOCK_KEY={{.LOCK_KEY}}
+        --build-arg SYNC_DEPTH={{.SYNC_DEPTH}}
+        --build-arg SYNC_PARTIAL={{.SYNC_PARTIAL}}
+        --build-arg ZSTD_LEVEL={{.ZSTD_LEVEL}}
+        --build-arg JOBS={{.JOBS}}
+        --build-arg CACHE_BUST={{.CACHE_BUST}}
+        {{.BUILD_FLAGS}} .
+      - ls -l '{{.CACHE_DIR}}/sources-{{.LOCK_KEY}}.tar.zst' && cat '{{.CACHE_DIR}}/sources-{{.LOCK_KEY}}.tar.sha256'
+
+  sources:push:
+    desc: Promote the source archive to the registry as an OCI artifact (needs oras)
+    cmds:
+      - scripts/promote.sh push-sources '{{.CACHE_DIR}}' '{{.LOCK_KEY}}' '{{.SOURCES_REF}}'
+
+  sources:pull:
+    desc: Fetch a promoted source archive into CACHE_DIR (needs oras)
+    cmds:
+      - mkdir -p '{{.CACHE_DIR}}'
+      - scripts/promote.sh pull-sources '{{.CACHE_DIR}}' '{{.LOCK_KEY}}' '{{.SOURCES_REF}}'
+
+  builder:image:
+    desc: "Stage 2: build the toolchain image"
+    cmds:
+      - >
+        {{.PODMAN}} {{.PODMAN_FLAGS}} build
+        --file Containerfile
+        --target builder
+        --tag {{.BUILDER_REF}}
+        --build-arg DEBIAN_IMAGE={{.DEBIAN_IMAGE}}
+        {{.BUILD_FLAGS}} .
+
+  builder:push:
+    desc: Push the toolchain image and print its digest
+    cmds:
+      - '{{.PODMAN}} {{.PODMAN_FLAGS}} push {{.BUILDER_REF}}'
+      - '{{.PODMAN}} {{.PODMAN_FLAGS}} image inspect {{.BUILDER_REF}} --format "{{"{{"}}.Digest{{"}}"}}"'
+
+  compile:
+    desc: "Stage 3: compile from the source archive; emits dist/picoemulator-<key>.tar.zst"
+    preconditions:
+      - sh: test -f '{{.SOURCE_ARCHIVE}}'
+        msg: "No source archive at {{.SOURCE_ARCHIVE}}; run `task sources` or `task sources:pull`."
+    cmds:
+      - >
+        {{.PODMAN}} {{.PODMAN_FLAGS}} build
+        --file Containerfile
+        --target build
+        --tag {{.IMAGE}}-build:{{.TAG}}
+        --volume '{{.CACHE_DIR}}:/cache:z'
+        --build-arg DEBIAN_IMAGE={{.DEBIAN_IMAGE}}
+        --build-arg BUILDER_IMAGE={{.BUILDER_IMAGE}}
+        --build-arg MANIFEST_URL={{.MANIFEST_URL}}
+        --build-arg MANIFEST_BRANCH={{.MANIFEST_BRANCH}}
+        --build-arg MANIFEST_FILE={{.MANIFEST_FILE}}
+        --build-arg MANIFEST_REV={{.MANIFEST_REV}}
+        --build-arg SOURCE_DATE_EPOCH={{.SOURCE_DATE_EPOCH}}
+        --build-arg COMPILER_CACHE={{.COMPILER_CACHE}}
+        --build-arg SOURCE_ARCHIVE=/cache/{{base .SOURCE_ARCHIVE}}
+        --build-arg LOCK_KEY={{.LOCK_KEY}}
+        --build-arg JOBS={{.JOBS}}
+        --build-arg CACHE_BUST={{.CACHE_BUST}}
+        {{.BUILD_FLAGS}} .
+      - mkdir -p '{{.DIST_DIR}}'
+      - |
+        cid="$({{.PODMAN}} {{.PODMAN_FLAGS}} create {{.IMAGE}}-build:{{.TAG}})"
+        trap '{{.PODMAN}} {{.PODMAN_FLAGS}} rm -f "$cid" >/dev/null 2>&1' EXIT
+        for f in picoemulator-{{.LOCK_KEY}}.tar.zst picoemulator-{{.LOCK_KEY}}.tar.sha256; do
+          {{.PODMAN}} {{.PODMAN_FLAGS}} cp "$cid:/out/$f" '{{.DIST_DIR}}/'
+        done
+      - ls -l '{{.DIST_DIR}}/picoemulator-{{.LOCK_KEY}}.tar.zst' && cat '{{.DIST_DIR}}/picoemulator-{{.LOCK_KEY}}.tar.sha256'
+
+  package:
+    desc: "Stage 4: build the runtime image from a package archive and extract it (PACKAGE=<tar.zst>)"
+    vars:
+      PACKAGE: '{{.PACKAGE | default (printf "%s/picoemulator-%s.tar.zst" .DIST_DIR .LOCK_KEY)}}'
+    preconditions:
+      - sh: test -f '{{.PACKAGE}}'
+        msg: "No package archive at {{.PACKAGE}}; run `task compile` or download the artifact."
+    cmds:
+      # The import stage reads the archive from the build context.
+      - mkdir -p '{{.ROOT_DIR}}/dist' && cp -f '{{.PACKAGE}}' '{{.ROOT_DIR}}/dist/picoemulator.tar.zst'
+      - >
+        {{.PODMAN}} {{.PODMAN_FLAGS}} build
+        --file Containerfile
+        --target deploy
+        --tag {{.IMAGE}}:{{.TAG}}
+        --build-arg DEBIAN_IMAGE={{.DEBIAN_IMAGE}}
+        --build-arg PACKAGE_STAGE=import
+        --build-arg PICOEMULATOR_TAR=dist/picoemulator.tar.zst
+        {{.BUILD_FLAGS}} .
+      - task: extract
+
+  ci:cleanup:
+    desc: Free disk on a GitHub-hosted runner (no-op elsewhere); prints CACHE_DIR/GRAPHROOT
+    cmds:
+      - scripts/ci-cleanup.sh
 
   repro:check:
     desc: Compare two extracted packages byte for byte (A=<dir> B=<dir>)

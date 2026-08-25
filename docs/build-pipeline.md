@@ -11,14 +11,18 @@ task verify           # repository completeness, script syntax, units, file mode
 
 ## Stages
 
-The `Containerfile` has four stages:
+The `Containerfile` has six stages:
 
 | Stage | What it does |
 | --- | --- |
 | `base` | Debian 13 layer shared by builder and deploy |
-| `builder` | toolchain: `repo`, git-lfs, cmake/ninja, and the qemu build dependencies |
-| `build` | runs `scripts/container-build.sh`: `repo init` + `repo sync`, then `external/qemu/android/rebuild.sh`; emits the distribution tree to `/out` |
+| `builder` | toolchain: `repo`, git-lfs, cmake/ninja, zstd, and the qemu build dependencies |
+| `sources` | `container-build.sh sync` + `trim`: lock-governed `repo sync`, trimmed to the Linux inputs, archived to `/cache/sources-<key>.tar.zst` (staged pipeline only) |
+| `build` | `container-build.sh all`: `repo init` + `repo sync`, then `external/qemu/android/rebuild.sh`; emits the distribution tree to `/out`. With `SOURCE_ARCHIVE` set it unpacks a promoted archive instead of syncing and also runs `package` |
+| `import` | unpacks a promoted `picoemulator-<key>.tar.zst` to `/out` so `deploy` can be built without compiling (`PACKAGE_STAGE=import`) |
 | `deploy` | runtime image: the built binaries plus every runtime dependency |
+
+`scripts/container-build.sh` is a dispatcher over one script per stage — `build-sync.sh`, `build-trim.sh`, `build-compile.sh`, `build-package.sh` — sharing `scripts/lib/build-env.sh` (the normalized environment and cache detection). `all` is sync + compile, which is what `task build` runs.
 
 `task build` targets `deploy`, then runs `task extract`, which copies `/opt/android/PICO/linux-pico-package` out of the image into `dist/`, writes `.build-variant`, and records `SHA256SUMS` over the four binaries that matter (`emulator`, `qemu-system-x86_64`, `libgfxstream_backend.so`, `libvulkan_lvp.so`).
 
@@ -76,7 +80,10 @@ The lock fixes *what* is built; these fix *how*, so that two builds of the same 
 | Base image pinned by digest, not by the mutable `debian:13-slim` tag | `DEBIAN_IMAGE` in `Taskfile.yml`, default in `Containerfile` |
 | `SOURCE_DATE_EPOCH`, derived from the locked manifest commit's own timestamp | recorded in `revisions.lock` by `scripts/write-lock.py`, exported by `container-build.sh` |
 | `TZ=UTC`, `LC_ALL=C` | `Containerfile` `ENV`, re-exported in `container-build.sh` |
-| `umask 022` | `container-build.sh`, so distribution file modes do not depend on the caller |
+| `umask 022` | `scripts/lib/build-env.sh`, so distribution file modes do not depend on the caller |
+| `PYTHONHASHSEED=0` | `scripts/lib/build-env.sh`; build-system Python iterates sets (the NOTICE generator) |
+| Compiler cache off (`COMPILER_CACHE=none`) | `Taskfile.yml` default; a cache hit replays a stored object and would mask a difference. `COMPILER_CACHE=auto` re-enables the bundled sccache for development builds, with its cache under `/cache/sccache` |
+| Fork-side fixes | qemu `28104445` derives the SDK build number from `SOURCE_DATE_EPOCH` instead of the wall clock; qemu `fe8473f9` seeds the string-obfuscation key from it and sorts the NOTICE output |
 
 Deriving the epoch from the reviewed commit rather than wall-clock time keeps `__DATE__`/`__TIME__` and any embedded timestamp a property of the source. Re-resolve the base image digest when you intend to move it:
 
@@ -85,7 +92,32 @@ podman pull docker.io/library/debian:13-slim
 podman image inspect docker.io/library/debian:13-slim --format '{{index .RepoDigests 0}}'
 ```
 
-**This does not yet make the build byte-reproducible.** A rebuild from an identical lock has been measured to differ inside `.text` and `.rodata`, while the link and packaging steps are deterministic; see *Reproducibility status* in `MANIFEST.md` for the measurements and what remains unattributed. Verifying it properly means two builds in **separate** cache roots — the shared `/cache` mount is the opposite of an isolated root — compared with `diffoscope`, and with any compiler cache disabled, since a cache hit replays a stored object instead of compiling and would mask a difference rather than prove its absence.
+Whether this makes the build byte-reproducible is measured, not assumed: see *Reproducibility status* in `MANIFEST.md` for the latest double-build result. The acceptance test is two builds in **separate** cache roots — the shared `/cache` mount is the opposite of an isolated root — with the compiler cache disabled, compared with:
+
+```bash
+task repro:check A=/path/a/dist/linux-pico-package B=/path/b/dist/linux-pico-package
+```
+
+which lists every differing file and, when `diffoscope` is installed, explains each difference in `dist/repro-report.txt`.
+
+## Stages and promotion
+
+`task build` does everything in one image build, which needs a machine that can hold the ~157 GB of checkout and objects. The same stages also run one at a time, each promoting a content-addressed artifact the next one starts from — this is what `.github/workflows/build.yml` does on GitHub-hosted runners, and every stage can be run locally:
+
+| Stage | Task | Input | Promoted output |
+| --- | --- | --- | --- |
+| sources | `task sources` | the lock and `scripts/source-trim.txt` | `CACHE_DIR/sources-<LOCK_KEY>.tar.zst` (+ `.tar.sha256`, `.list`); `task sources:push` sends it to `ghcr.io/komastudios/pico-emulator-sources:<LOCK_KEY>` as an OCI artifact |
+| builder | `task builder:image` | the `builder` stage of the `Containerfile` | `ghcr.io/komastudios/pico-emulator-builder:<BUILDER_KEY>` |
+| compile | `task compile` | the source archive (`task sources:pull` fetches it) and `BUILDER_IMAGE` | `dist/picoemulator-<LOCK_KEY>.tar.zst` (+ `.tar.sha256`) |
+| package | `task package PACKAGE=…` | the package archive | the `deploy` image and `dist/linux-pico-package` with `SHA256SUMS` |
+
+`task lock:key` prints the keys. `LOCK_KEY` is a hash of the lock, the pins, the trim rules and the sync/trim scripts, so any change to what the archive would contain names a new archive; `BUILDER_KEY` hashes the builder stage and the base image digest.
+
+The sources stage removes what a Linux x86_64 host build never reads — `.repo` (39 GB of git objects), the guest system images, and the clang, Qt and dependency prebuilts for other hosts (`scripts/source-trim.txt`) — taking the tree from roughly 118 GB to about 10 GB, then asserts that every input the build needs is still there (`scripts/source-required.txt`). The archive is a deterministic tar (sorted, fixed owner, mtimes at `SOURCE_DATE_EPOCH`); its identity is the sha256 of the uncompressed stream, since zstd output may vary between versions. Because object files embed their paths, the compile stage always unpacks it at `/cache/src`, exactly where a synced tree lives.
+
+On a hosted runner the sync itself is the tight spot: `.repo` alone exceeds the disk. `SYNC_DEPTH=1` (`repo init --depth=1`) and `SYNC_PARTIAL=1` (`--partial-clone --clone-filter=blob:none`) shrink it; the lock assertion still holds because every project is checked out at its pinned commit. The workflow uses `SYNC_DEPTH=1`.
+
+`.github/workflows/build.yml` runs on `workflow_dispatch` and on pushes to `main` that touch the lock, manifests, `Containerfile`, `Taskfile.yml` or `scripts/`. It resolves the keys, skips the sources and builder stages when their promotions already exist, compiles **twice on independent runners**, and compares the two packages with `task repro:check` — a cross-machine reproducibility check on every run. The dispatch inputs `sources_ref` and `builder_ref` re-run the later stages from a chosen promotion. `.github/workflows/ci.yml` runs `task verify` and `task lock:check` on every push and pull request.
 
 ## Tolerated build failure
 

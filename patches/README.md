@@ -4,9 +4,9 @@ These patches remain the authoritative record of the source modifications. Each 
 
 | Patch | Apply in | Base commit | Equivalent fork branch | Status |
 | --- | --- | --- | --- | --- |
-| `pico-emulator-qemu-linux.patch` | `external/qemu` | `8ca9387f0822db1cb0dfc8ba724db212084bb2df` | `komastudios/PICO-Emulator-qemu` @ `pico-linux` (`b461fb8c`) | Required |
+| `pico-emulator-qemu-linux.patch` | `external/qemu` | `8ca9387f0822db1cb0dfc8ba724db212084bb2df` | `komastudios/PICO-Emulator-qemu` @ `pico-linux` (`fe8473f9`) | Required |
 | `pico-emulator-gfxstream-linux.patch` | `hardware/google/gfxstream` | `17b28f4e8c38b1aaadb620072786a0cbeba7362b` | `komastudios/PICO-Emulator-gfxstream` @ `pico-linux-debug` (`3d7006f8`) | Required |
-| `pico-emulator-gfxstream-yuv-readback.patch` | `hardware/google/gfxstream` | `f7f8c7ec5e03b720c09e807b6e879248cfdc9969` (`pico-linux` tip) | `komastudios/PICO-Emulator-gfxstream` @ `pico-linux` (`c7cdba8b`), `pico-linux-debug` (`c4af3b55`) | Required — fixes the `rcReadColorBufferYUV` crash, see FORKS.md §2 commit 8 |
+| `pico-emulator-gfxstream-yuv-readback.patch` | `hardware/google/gfxstream` | `f7f8c7ec5e03b720c09e807b6e879248cfdc9969` (`pico-linux` tip) | `komastudios/PICO-Emulator-gfxstream` @ `pico-linux` (`c7cdba8b`), `pico-linux-debug` (`c4af3b55`) | Required — fixes the `rcReadColorBufferYUV` crash (gfxstream commit 8, see **Sources** in `README.md`) |
 | `experimental-swiftshader.patch` | standalone upstream SwiftShader | `6b8d31709ad185dbd64e80865e830a9dbe8e7559` | `komastudios/swiftshader` @ `pico-linux` (`20fc43c1`) | Diagnostic only; do not deploy |
 
 The required patches were captured directly from the source trees used to build the deployed binaries. Apply them with `git apply` as shown in the top-level README.

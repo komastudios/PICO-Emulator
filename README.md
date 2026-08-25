@@ -18,6 +18,9 @@ task build           # sync + compile + deploy image + extract to dist/
 sudo task install    # install the extracted package and systemd units on this host
 task run SYSTEM_IMAGES=/path/to/system-images
 task lock            # re-pin the manifest and project revisions
+task sources         # staged pipeline: sync + trim to a promotable source archive
+task compile         # staged pipeline: build from that archive
+task repro:check A=… B=…   # compare two extracted packages byte for byte
 ```
 
 Builds are reproducible by default: `revisions.lock` and `manifests/pins.xml` pin the manifest and every otherwise-floating project to a commit, and the build fails if the checkout does not match them.

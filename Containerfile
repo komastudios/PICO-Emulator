@@ -3,8 +3,15 @@
 # Stages:
 #   base    common Debian 13 layer shared by builder and deploy
 #   builder toolchain needed to sync and compile the PICO host
-#   build   repo sync + rebuild.sh; emits the distribution tree to /out
+#   sources repo sync + trim; emits sources-<key>.tar.zst onto /cache
+#   build   repo sync + rebuild.sh (or rebuild.sh from a promoted source
+#           archive); emits the distribution tree to /out
+#   import  unpacks a promoted picoemulator archive to /out instead of building
 #   deploy  runtime image: built binaries + every runtime dependency
+#
+# `task build` runs builder -> build -> deploy in one go. The staged pipeline
+# (task sources / compile / package, and the GitHub workflow) runs the same
+# stages one at a time, promoting the archive between them.
 #
 # The image deliberately contains NO proprietary vendor blobs. The API 36
 # guest image and any AVD data must be bind-mounted at runtime; see the
@@ -18,6 +25,12 @@
 # Pinned by digest, not tag: a tag is mutable, and the toolchain layer it
 # produces is an input to every binary this build emits.
 ARG DEBIAN_IMAGE=docker.io/library/debian@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f
+# A prebuilt builder image (by digest) lets the compile stage run without
+# rebuilding the toolchain layer; the default is the local builder stage.
+ARG BUILDER_IMAGE=builder
+# Where the deploy stage takes the distribution tree from: the build stage,
+# or "import" to use a promoted picoemulator archive from the build context.
+ARG PACKAGE_STAGE=build
 
 # ---------------------------------------------------------------- base ----
 FROM ${DEBIAN_IMAGE} AS base
@@ -46,7 +59,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       bison flex texinfo \
       zlib1g-dev libglib2.0-dev libpixman-1-dev libssl-dev \
       libx11-dev libxcb1-dev libxkbcommon-dev \
-      rsync unzip xz-utils file procps \
+      rsync unzip xz-utils zstd file procps \
     && git lfs install --system
 
 # repo refuses to run without an identity, and colour output corrupts logs.
@@ -55,8 +68,46 @@ RUN git config --system user.name  "PICO container build" && \
     git config --system color.ui false && \
     git config --system advice.detachedHead false
 
+# ------------------------------------------------------------- sources ----
+# Sync and trim only; the archive lands on the /cache mount, never in a layer.
+FROM builder AS sources
+ARG MANIFEST_URL=https://github.com/komastudios/PICO-Emulator-manifest.git
+ARG MANIFEST_BRANCH=pico-linux
+ARG MANIFEST_FILE=pico/emu-35-rom.xml
+ARG JOBS=8
+ARG CACHE_BUST=0
+ARG MANIFEST_REV=
+ARG LOCK_FILE=
+ARG PINS_FILE=
+ARG SOURCE_DATE_EPOCH=
+ARG LOCK_KEY=
+ARG SYNC_DEPTH=
+ARG SYNC_PARTIAL=0
+ARG ZSTD_LEVEL=12
+ENV TZ=UTC LC_ALL=C LANG=C.UTF-8
+COPY scripts/container-build.sh scripts/build-sync.sh scripts/build-trim.sh \
+     scripts/source-trim.txt scripts/source-required.txt /opt/pico/scripts/
+COPY scripts/lib/build-env.sh /opt/pico/scripts/lib/build-env.sh
+COPY manifests /opt/pico/manifests
+COPY revisions.lock revisions-debug.lock /opt/pico/
+RUN chmod 0755 /opt/pico/scripts/*.sh
+RUN MANIFEST_URL="${MANIFEST_URL}" \
+    MANIFEST_BRANCH="${MANIFEST_BRANCH}" \
+    MANIFEST_FILE="${MANIFEST_FILE}" \
+    MANIFEST_REV="${MANIFEST_REV}" \
+    LOCK_FILE="${LOCK_FILE}" \
+    PINS_FILE="${PINS_FILE}" \
+    SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" \
+    LOCK_KEY="${LOCK_KEY}" \
+    SYNC_DEPTH="${SYNC_DEPTH}" \
+    SYNC_PARTIAL="${SYNC_PARTIAL}" \
+    ZSTD_LEVEL="${ZSTD_LEVEL}" \
+    JOBS="${JOBS}" \
+    CACHE_BUST="${CACHE_BUST}" \
+    sh -c '/opt/pico/scripts/container-build.sh sync && /opt/pico/scripts/container-build.sh trim'
+
 # ---------------------------------------------------------------- build ----
-FROM builder AS build
+FROM ${BUILDER_IMAGE} AS build
 
 # Which manifest to sync. The debug variant pins gfxstream to
 # pico-linux-debug, which additionally dumps every SPIR-V shader module.
@@ -78,15 +129,21 @@ ARG SOURCE_DATE_EPOCH=
 # "none" keeps compilation deterministic and avoids the bundled sccache 0.3.0;
 # "auto" trades that for speed on development builds.
 ARG COMPILER_CACHE=none
+# Staged pipeline: a promoted source archive on /cache (from the sources
+# stage) replaces the sync; LOCK_KEY must match the key recorded in it.
+ARG SOURCE_ARCHIVE=
+ARG LOCK_KEY=
 ENV TZ=UTC LC_ALL=C LANG=C.UTF-8
 
-COPY scripts/container-build.sh /usr/local/bin/container-build.sh
+COPY scripts/container-build.sh scripts/build-sync.sh scripts/build-compile.sh \
+     scripts/build-package.sh /opt/pico/scripts/
+COPY scripts/lib/build-env.sh /opt/pico/scripts/lib/build-env.sh
 COPY manifests /opt/pico/manifests
 COPY revisions.lock revisions-debug.lock /opt/pico/
-RUN chmod 0755 /usr/local/bin/container-build.sh
+RUN chmod 0755 /opt/pico/scripts/*.sh && \
+    ln -sf /opt/pico/scripts/container-build.sh /usr/local/bin/container-build.sh
 
-# No ccache mount here: rebuild.sh drives its own prebuilt toolchain and does
-# not route compilations through ccache, so a ccache mount buys nothing. The
+# The compiler cache is opt-in (COMPILER_CACHE); see build-compile.sh. The
 # reuse that matters comes from the /cache bind mount (the repo checkout) and
 # podman's own layer cache.
 RUN MANIFEST_URL="${MANIFEST_URL}" \
@@ -97,9 +154,29 @@ RUN MANIFEST_URL="${MANIFEST_URL}" \
     PINS_FILE="${PINS_FILE}" \
     SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" \
     COMPILER_CACHE="${COMPILER_CACHE}" \
+    SOURCE_ARCHIVE="${SOURCE_ARCHIVE}" \
+    LOCK_KEY="${LOCK_KEY}" \
     JOBS="${JOBS}" \
     CACHE_BUST="${CACHE_BUST}" \
-    /usr/local/bin/container-build.sh
+    sh -c 'if [ -n "$SOURCE_ARCHIVE" ]; then \
+             /opt/pico/scripts/container-build.sh compile && \
+             /opt/pico/scripts/container-build.sh package; \
+           else \
+             /opt/pico/scripts/container-build.sh all; \
+           fi'
+
+# --------------------------------------------------------------- import ----
+# Deploy from a promoted package archive instead of compiling: put
+# picoemulator-<key>.tar.zst in the build context and pass
+# --build-arg PACKAGE_STAGE=import --build-arg PICOEMULATOR_TAR=<path>.
+FROM base AS import
+ARG PICOEMULATOR_TAR=dist/picoemulator.tar.zst
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends zstd
+COPY ${PICOEMULATOR_TAR} /in/picoemulator.tar.zst
+RUN mkdir -p /out && zstd -dc /in/picoemulator.tar.zst | tar -C /out -xf - && \
+    test -x /out/picoemulator/emulator
 
 # --------------------------------------------------------------- deploy ----
 FROM base AS deploy
@@ -134,7 +211,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 ENV PICO_ROOT=/opt/android/PICO
 ENV PACKAGE=${PICO_ROOT}/linux-pico-package
 
-COPY --from=build /out/picoemulator ${PACKAGE}/picoemulator
+COPY --from=${PACKAGE_STAGE} /out/picoemulator ${PACKAGE}/picoemulator
 
 # Repository-owned inputs (README section 5).
 COPY config/avd-api36/Pico_36_Linux.avd/config.ini \

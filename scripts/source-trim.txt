@@ -1,0 +1,53 @@
+# Paths removed from the synced tree before it is archived for the compile
+# stage. One glob per line, relative to the source root; blank lines and
+# comments are ignored. Only Linux x86_64 host inputs are kept.
+#
+# This file is an input to the source archive's key (task lock:key): editing it
+# produces a new archive.
+
+# git metadata: every project's .git points into .repo; the compile stage
+# reads .pico-provenance instead
+.repo
+
+# guest images, unused by the host build (CTest is disabled)
+prebuilts/android-emulator-build/system-images
+
+# toolchains for other hosts, and clang versions the build does not select
+# (external/qemu/android/build/toolchains.json names the one it uses)
+prebuilts/clang/host/darwin-x86
+prebuilts/clang/host/windows-x86
+prebuilts/clang/host/linux-x86/clang-3289846
+prebuilts/clang/host/linux-x86/clang-r522817
+prebuilts/clang/host/linux-x86/clang-r536225
+prebuilts/clang/host/linux-x86/clang-r547379
+prebuilts/clang/host/linux-x86/profiles
+prebuilts/clang/host/linux-x86/mlgo-models
+prebuilts/clang/host/linux-x86/kleaf
+prebuilts/clang/host/linux-x86/soong
+prebuilts/clang/host/linux-x86/docs
+
+# Qt and dependency prebuilts for other hosts
+prebuilts/android-emulator-build/qt/darwin-*
+prebuilts/android-emulator-build/qt/windows*
+prebuilts/android-emulator-build/qt/linux-aarch64*
+prebuilts/android-emulator-build/mesa/darwin-*
+prebuilts/android-emulator-build/mesa/windows*
+prebuilts/android-emulator-build/mesa/linux-aarch64
+prebuilts/android-emulator-build/mesa-deps/darwin-*
+prebuilts/android-emulator-build/mesa-deps/windows*
+prebuilts/android-emulator-build/mesa-deps/linux-aarch64
+prebuilts/android-emulator-build/qemu-android-deps/darwin-*
+prebuilts/android-emulator-build/qemu-android-deps/windows*
+prebuilts/android-emulator-build/qemu-android-deps/linux-aarch64
+prebuilts/android-emulator-build/common/msvc
+
+# other-host build tools
+prebuilts/studio/jdk
+prebuilts/cmake/darwin*
+prebuilts/cmake/windows*
+prebuilts/ninja/darwin*
+prebuilts/ninja/windows*
+prebuilts/python/darwin*
+prebuilts/python/windows*
+prebuilts/bazel/darwin*
+prebuilts/bazel/windows*

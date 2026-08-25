@@ -25,7 +25,13 @@ required=(
   config/vendor-metadata/pico-host-source.properties
   config/vendor-metadata/swan-host-source.properties
   config/vendor-metadata/swan-system-image-source.properties
-  scripts/write-lock.py
+  scripts/write-lock.py scripts/repro-check.sh
+  scripts/build-sync.sh scripts/build-trim.sh scripts/build-compile.sh
+  scripts/build-package.sh scripts/lib/build-env.sh
+  scripts/source-trim.txt scripts/source-required.txt
+  scripts/promote.sh scripts/ci-cleanup.sh
+  .github/workflows/ci.yml .github/workflows/build.yml
+  .github/actions/setup-tools/action.yml
   manifests/pins.xml manifests/pins-debug.xml
   revisions.lock revisions-debug.lock
 )
@@ -33,7 +39,12 @@ for path in "${required[@]}"; do
   test -f "$path" || { printf 'missing: %s\n' "$path" >&2; exit 1; }
 done
 
-bash -n scripts/*.sh
+bash -n scripts/*.sh scripts/lib/*.sh
+python3 -m py_compile scripts/write-lock.py
+rm -rf scripts/__pycache__
+if command -v actionlint >/dev/null; then
+  actionlint
+fi
 if command -v systemd-analyze >/dev/null; then
   systemd-analyze verify systemd/*.service
 fi

@@ -1,0 +1,15 @@
+name: setup-tools
+description: Install task, podman, oras, zstd and diffoscope on a hosted runner
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        sudo sh -c "$(curl -fsSL https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq --no-install-recommends podman zstd diffoscope-minimal >/dev/null
+        v="${ORAS_VERSION:-1.2.2}"
+        curl -fsSL "https://github.com/oras-project/oras/releases/download/v${v}/oras_${v}_linux_amd64.tar.gz" \
+          | sudo tar -xz -C /usr/local/bin oras
+        task --version; podman --version; oras version | head -1

@@ -1,0 +1,16 @@
+# Paths that must exist after trimming, relative to the source root. The trim
+# stage fails if any is missing, so a bad trim rule cannot produce an archive
+# that only fails an hour later in the compile.
+external/qemu/android/rebuild.sh
+external/qemu/android/build/toolchains.json
+prebuilts/clang/host/linux-x86/clang-r530567/bin/clang
+prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/x86_64-linux/lib64/libc.so.6
+prebuilts/android-emulator-build/qt/linux-x86_64/lib
+prebuilts/android-emulator-build/common/ANGLE/linux-x86_64/lib/libangle_st.so
+prebuilts/android-emulator-build/common/vulkan
+prebuilts/android-emulator-build/qemu-android-deps/linux-x86_64
+prebuilts/cmake/linux-x86/bin/cmake
+prebuilts/ninja/linux-x86/ninja
+prebuilts/python/linux-x86/bin/python3
+hardware/google/gfxstream
+hardware/google/aemu
