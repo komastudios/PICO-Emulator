@@ -58,6 +58,10 @@ fi
       printf 'diffoscope not installed; install it for per-file analysis.\n'
     fi
   fi
-} | tee "${report:-/dev/null}" | head -n 60
-[ -n "$report" ] && printf '\nfull report: %s\n' "$report"
+} > "$tmp/report"
+if [ -n "$report" ]; then cp "$tmp/report" "$report"; fi
+head -n 60 "$tmp/report"
+if [ "$(wc -l < "$tmp/report")" -gt 60 ]; then
+  printf '\n[... %s more lines%s]\n' "$(( $(wc -l < "$tmp/report") - 60 ))" "${report:+ in $report}"
+fi
 exit 1
