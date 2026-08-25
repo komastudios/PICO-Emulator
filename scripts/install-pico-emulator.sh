@@ -10,7 +10,7 @@
 #   sudo scripts/install-pico-emulator.sh [options]
 #
 #   --source DIR     Package to install from. Default: ./dist/linux-pico-package
-#                    (produced by `make extract`).
+#                    (produced by `task extract`).
 #   --prefix DIR     Install root. Default: /opt/android/PICO
 #   --state DIR      Mutable state root. Default: /var/lib/android
 #   --user NAME      Service user. Default: android

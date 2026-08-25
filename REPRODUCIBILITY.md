@@ -67,7 +67,7 @@ The lavapipe hash is distro-build-specific. A different supported Mesa build nee
 
 ## Currently deployed artifacts (container build, `pico-linux`)
 
-Built by `make` from the forked manifest `pico/emu-35-rom.xml` on Debian 13 and installed with `scripts/install-pico-emulator.sh`. This is what the host runs now. Rebuilt 2026-08-25 from gfxstream `pico-linux` @ `c7cdba8b` (the YUV readback crash fix); `libgfxstream_backend.so` now has Build ID `09f3c1b841357837d86fe5f8652c13d20c07e3c5`. `emulator` and `qemu-system-x86_64` also changed hash: the cache-busted rebuild recompiled the whole tree and these binaries are not bit-reproducible across builds, even though no source of theirs changed. Only lavapipe, copied in verbatim by the deploy stage, is unchanged. A rebuild needs `make CACHE_BUST=$(date +%s) build` — without it podman reuses the cached build layer and silently ships the previous library.
+Built by `task build` from the forked manifest `pico/emu-35-rom.xml` on Debian 13 and installed with `scripts/install-pico-emulator.sh`. This is what the host runs now. Rebuilt 2026-08-25 from gfxstream `pico-linux` @ `c7cdba8b` (the YUV readback crash fix); `libgfxstream_backend.so` now has Build ID `09f3c1b841357837d86fe5f8652c13d20c07e3c5`. `emulator` and `qemu-system-x86_64` also changed hash: the cache-busted rebuild recompiled the whole tree and these binaries are not bit-reproducible across builds, even though no source of theirs changed. Only lavapipe, copied in verbatim by the deploy stage, is unchanged. A rebuild needs `make CACHE_BUST=$(date +%s) build` — without it podman reuses the cached build layer and silently ships the previous library.
 
 | Relative path under `picoemulator/` | SHA-256 |
 | --- | --- |
@@ -112,7 +112,7 @@ Lavapipe remains dynamically dependent on the distribution's LLVM, DRM, XCB, Way
 ## Repository-to-deployment mapping
 
 - `patches/`: exact source modifications, mirrored as fork branches (see **Sources** in the [README](README.md))
-- `Containerfile`, `.containerignore`, `Makefile`: end-to-end container build; the deploy image contains the built binaries and runtime dependencies but no vendor blobs
+- `Containerfile`, `.containerignore`, `Taskfile.yml`: end-to-end container build; the deploy image contains the built binaries and runtime dependencies but no vendor blobs
 - `scripts/install-pico-emulator.sh`: idempotent host installer for the extracted package, its service user, and the three systemd units
 - `scripts/`: copied to `linux-pico-package/`
 - `config/avd-api36/`: immutable AVD seed copied to the package

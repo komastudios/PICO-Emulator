@@ -1,0 +1,189 @@
+# Build the PICO Spatial Emulator for Linux with podman.
+#
+#   task                 list the tasks
+#   task build           build the image, then extract the package to dist/
+#   task debug           build the debug variant (gfxstream pico-linux-debug)
+#   task install         extract, then install onto this host (needs root)
+#   task lock            re-resolve the manifest and pin it in revisions.lock
+#
+# Repeated builds reuse CACHE_DIR, which holds the repo checkout (~108 GB once
+# synced). The first build syncs it; later builds reuse it, and podman's layer
+# cache skips the compile entirely when only the deploy stage changed.
+#
+# On a host whose rootless podman has no systemd user session, run with:
+#   PODMAN_FLAGS="--cgroup-manager=cgroupfs --events-backend=file" task build
+
+version: '3'
+
+vars:
+  PODMAN: '{{.PODMAN | default "podman"}}'
+  # Extra global podman flags, before the subcommand.
+  PODMAN_FLAGS: '{{.PODMAN_FLAGS | default ""}}'
+  IMAGE: '{{.IMAGE | default "localhost/pico-emulator"}}'
+  DEBIAN_IMAGE: '{{.DEBIAN_IMAGE | default "docker.io/library/debian:13-slim"}}'
+  CACHE_DIR: '{{.CACHE_DIR | default (printf "%s/.cache" .ROOT_DIR)}}'
+  DIST_DIR: '{{.DIST_DIR | default (printf "%s/dist" .ROOT_DIR)}}'
+  JOBS:
+    sh: nproc
+  # DEBUG=1 selects the debug manifest and image tag. `task debug` sets it.
+  DEBUG: '{{.DEBUG | default "0"}}'
+  TAG: '{{if eq .DEBUG "1"}}debug{{else}}latest{{end}}'
+  VARIANT: '{{if eq .DEBUG "1"}}-debug{{else}}{{end}}'
+  MANIFEST_FILE: 'pico/emu-35-rom{{.VARIANT}}.xml'
+  LOCK_FILE: 'revisions{{.VARIANT}}.lock'
+  PINS_FILE: 'manifests/pins{{.VARIANT}}.xml'
+  # Read the locked manifest commit; empty if the lock is missing.
+  MANIFEST_REV:
+    sh: sed -n 's/^MANIFEST_REV=//p' '{{.ROOT_DIR}}/revisions{{if eq (.DEBUG | default "0") "1"}}-debug{{end}}.lock' 2>/dev/null || true
+  MANIFEST_URL: '{{.MANIFEST_URL | default "https://github.com/komastudios/PICO-Emulator-manifest.git"}}'
+  MANIFEST_BRANCH: '{{.MANIFEST_BRANCH | default "pico-linux"}}'
+  # Bump to force a re-sync and recompile even with a warm cache.
+  CACHE_BUST: '{{.CACHE_BUST | default "0"}}'
+  BUILD_FLAGS: '{{.BUILD_FLAGS | default ""}}'
+  # Guest image directory to bind-mount for `task run`. Must be the extracted
+  # system-images directory from the vendor archive; see README.md.
+  SYSTEM_IMAGES: '{{.SYSTEM_IMAGES | default ""}}'
+  STATE_VOLUME: '{{.STATE_VOLUME | default "pico-emulator-state"}}'
+  GUEST_MOUNT: /opt/android/PICO/linux-pico-package/swan_rls_spaceos_oversea_K_pico_emulator_win64_20260731_ide/system-images/system-images
+
+tasks:
+  default:
+    desc: List the available tasks
+    silent: true
+    cmds: ['task --list']
+
+  build:
+    desc: Build the image and extract the package to dist/
+    cmds:
+      - mkdir -p '{{.CACHE_DIR}}'
+      - >
+        {{.PODMAN}} {{.PODMAN_FLAGS}} build
+        --file Containerfile
+        --target deploy
+        --tag {{.IMAGE}}:{{.TAG}}
+        --volume '{{.CACHE_DIR}}:/cache:z'
+        --build-arg DEBIAN_IMAGE={{.DEBIAN_IMAGE}}
+        --build-arg MANIFEST_URL={{.MANIFEST_URL}}
+        --build-arg MANIFEST_BRANCH={{.MANIFEST_BRANCH}}
+        --build-arg MANIFEST_FILE={{.MANIFEST_FILE}}
+        --build-arg MANIFEST_REV={{.MANIFEST_REV}}
+        --build-arg LOCK_FILE={{if .MANIFEST_REV}}/opt/pico/{{.LOCK_FILE}}{{end}}
+        --build-arg PINS_FILE={{if .MANIFEST_REV}}/opt/pico/{{.PINS_FILE}}{{end}}
+        --build-arg JOBS={{.JOBS}}
+        --build-arg CACHE_BUST={{.CACHE_BUST}}
+        {{.BUILD_FLAGS}} .
+      - printf '\nBuilt %s:%s (manifest %s%s)\n' '{{.IMAGE}}' '{{.TAG}}' '{{.MANIFEST_FILE}}' '{{if .MANIFEST_REV}} @ {{.MANIFEST_REV}}{{else}} — unlocked, run `task lock`{{end}}'
+      - task: extract
+
+  debug:
+    desc: Build the debug variant (gfxstream pico-linux-debug, dumps SPIR-V shaders)
+    cmds:
+      - task: build
+        vars: {DEBUG: '1'}
+
+  extract:
+    desc: Copy the deployable package out of the built image into dist/
+    cmds:
+      - '{{.PODMAN}} {{.PODMAN_FLAGS}} image exists {{.IMAGE}}:{{.TAG}} || { echo "image {{.IMAGE}}:{{.TAG}} not found; run ''task build'' first" >&2; exit 1; }'
+      - rm -rf '{{.DIST_DIR}}/linux-pico-package'
+      - mkdir -p '{{.DIST_DIR}}'
+      - |
+        cid="$({{.PODMAN}} {{.PODMAN_FLAGS}} create {{.IMAGE}}:{{.TAG}})"
+        trap '{{.PODMAN}} {{.PODMAN_FLAGS}} rm -f "$cid" >/dev/null 2>&1' EXIT
+        {{.PODMAN}} {{.PODMAN_FLAGS}} cp \
+          "$cid:/opt/android/PICO/linux-pico-package" '{{.DIST_DIR}}/linux-pico-package'
+      - printf '%s\n' '{{.TAG}}' > '{{.DIST_DIR}}/linux-pico-package/.build-variant'
+      - |
+        cd '{{.DIST_DIR}}/linux-pico-package' && sha256sum \
+          picoemulator/emulator \
+          picoemulator/qemu/linux-x86_64/qemu-system-x86_64 \
+          picoemulator/lib64/libgfxstream_backend.so \
+          picoemulator/lib64/vulkan/libvulkan_lvp.so > SHA256SUMS
+      - printf 'Extracted to %s (%s)\n' '{{.DIST_DIR}}/linux-pico-package' "$(du -sh '{{.DIST_DIR}}/linux-pico-package' | cut -f1)"
+      - cat '{{.DIST_DIR}}/linux-pico-package/SHA256SUMS'
+
+  install:
+    desc: Install the extracted package and systemd units on this host (needs root)
+    deps: [extract]
+    cmds:
+      - scripts/install-pico-emulator.sh --source '{{.DIST_DIR}}/linux-pico-package'
+
+  run:
+    desc: Run the emulator from the built image (set SYSTEM_IMAGES=...)
+    preconditions:
+      - sh: test -n '{{.SYSTEM_IMAGES}}'
+        msg: "SYSTEM_IMAGES is not set. Pass the extracted system-images directory, e.g. task run SYSTEM_IMAGES=/srv/pico/system-images"
+    cmds:
+      - >
+        {{.PODMAN}} {{.PODMAN_FLAGS}} run --rm -it
+        --device /dev/kvm
+        --volume '{{.SYSTEM_IMAGES}}:{{.GUEST_MOUNT}}:ro,z'
+        --volume '{{.STATE_VOLUME}}:/var/lib/android:z'
+        --publish 5037:5037
+        {{.IMAGE}}:{{.TAG}}
+
+  shell:
+    desc: Interactive shell in the built image
+    cmds:
+      - '{{.PODMAN}} {{.PODMAN_FLAGS}} run --rm -it --entrypoint /bin/bash {{.IMAGE}}:{{.TAG}}'
+
+  lock:
+    desc: Re-resolve the manifest and project revisions into the lock files
+    cmds:
+      - scripts/write-lock.py
+      - scripts/write-lock.py --debug
+
+  lock:check:
+    desc: Fail if the lock files are stale against the current branch tips
+    cmds:
+      - scripts/write-lock.py --check
+      - scripts/write-lock.py --debug --check
+
+  verify:
+    desc: Check repository completeness, script syntax, units and file modes
+    cmds:
+      - scripts/validate-repository.sh
+
+  cache-info:
+    desc: Show what the build cache is holding
+    silent: true
+    cmds:
+      - |
+        if [ -d '{{.CACHE_DIR}}' ]; then
+          du -sh '{{.CACHE_DIR}}' 2>/dev/null
+          du -sh '{{.CACHE_DIR}}'/* 2>/dev/null || true
+        else
+          echo "no cache at {{.CACHE_DIR}}"
+        fi
+
+  clean-cache:
+    desc: Delete the build cache; the next build re-syncs from scratch
+    cmds:
+      - rm -rf '{{.CACHE_DIR}}'
+
+  clean:
+    desc: Remove the built image and dist/
+    cmds:
+      - '{{.PODMAN}} {{.PODMAN_FLAGS}} rmi {{.IMAGE}}:{{.TAG}} || true'
+      - rm -rf '{{.DIST_DIR}}'
+
+  config:
+    desc: Print the resolved configuration without building
+    silent: true
+    cmds:
+      - |
+        printf '%-16s %s\n' \
+          PODMAN          '{{.PODMAN}} {{.PODMAN_FLAGS}}' \
+          IMAGE           '{{.IMAGE}}:{{.TAG}}' \
+          DEBUG           '{{.DEBUG}}' \
+          MANIFEST_URL    '{{.MANIFEST_URL}}' \
+          MANIFEST_BRANCH '{{.MANIFEST_BRANCH}}' \
+          MANIFEST_FILE   '{{.MANIFEST_FILE}}' \
+          MANIFEST_REV    '{{if .MANIFEST_REV}}{{.MANIFEST_REV}}{{else}}(unlocked){{end}}' \
+          LOCK_FILE       '{{.LOCK_FILE}}' \
+          PINS_FILE       '{{.PINS_FILE}}' \
+          CACHE_DIR       '{{.CACHE_DIR}}' \
+          JOBS            '{{.JOBS}}' \
+          DEBIAN_IMAGE    '{{.DEBIAN_IMAGE}}' \
+          DIST_DIR        '{{.DIST_DIR}}' \
+          SYSTEM_IMAGES   '{{.SYSTEM_IMAGES}}'

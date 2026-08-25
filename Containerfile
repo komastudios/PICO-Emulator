@@ -8,9 +8,9 @@
 #
 # The image deliberately contains NO proprietary vendor blobs. The API 36
 # guest image and any AVD data must be bind-mounted at runtime; see the
-# "Runtime" notes at the bottom of this file and the Makefile.
+# "Runtime" notes at the bottom of this file and the Taskfile.
 #
-# Build cache: bind-mount a host directory at /cache (the Makefile does this
+# Build cache: bind-mount a host directory at /cache (the Taskfile does this
 # by default). The repo checkout lives there and is reused across builds — it
 # is ~108 GB once synced. Without the mount the build still works, but nothing
 # is reused and the source tree is removed before the layer is committed.
@@ -64,8 +64,15 @@ ARG MANIFEST_FILE=pico/emu-35-rom.xml
 ARG JOBS=8
 # Bump to force a re-sync and rebuild even when the cache is warm.
 ARG CACHE_BUST=0
+# Reproducible sync. Empty means "follow MANIFEST_BRANCH"; the Taskfile fills
+# these in from revisions.lock / manifests/pins.xml (see `task lock`).
+ARG MANIFEST_REV=
+ARG LOCK_FILE=
+ARG PINS_FILE=
 
 COPY scripts/container-build.sh /usr/local/bin/container-build.sh
+COPY manifests /opt/pico/manifests
+COPY revisions.lock revisions-debug.lock /opt/pico/
 RUN chmod 0755 /usr/local/bin/container-build.sh
 
 # No ccache mount here: rebuild.sh drives its own prebuilt toolchain and does
@@ -75,6 +82,9 @@ RUN chmod 0755 /usr/local/bin/container-build.sh
 RUN MANIFEST_URL="${MANIFEST_URL}" \
     MANIFEST_BRANCH="${MANIFEST_BRANCH}" \
     MANIFEST_FILE="${MANIFEST_FILE}" \
+    MANIFEST_REV="${MANIFEST_REV}" \
+    LOCK_FILE="${LOCK_FILE}" \
+    PINS_FILE="${PINS_FILE}" \
     JOBS="${JOBS}" \
     CACHE_BUST="${CACHE_BUST}" \
     /usr/local/bin/container-build.sh
@@ -158,7 +168,7 @@ EXPOSE 5037 5554 5555
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/pico-entrypoint"]
 
-# Runtime (see Makefile `make run`):
+# Runtime (see Taskfile `task run`):
 #   podman run --rm --device /dev/kvm \
 #     -v /path/to/system-images:${PACKAGE}/swan_rls_spaceos_oversea_K_pico_emulator_win64_20260731_ide/system-images/system-images:ro \
 #     -v pico-state:/var/lib/android -p 5037:5037 <image>

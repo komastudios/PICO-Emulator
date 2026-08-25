@@ -6,6 +6,8 @@
 #
 # Inputs (environment):
 #   MANIFEST_URL, MANIFEST_BRANCH, MANIFEST_FILE, JOBS
+#   MANIFEST_REV  optional: manifest commit to pin instead of MANIFEST_BRANCH
+#   PINS_FILE     optional: repo local manifest pinning otherwise-floating projects
 # Output:
 #   /out/picoemulator — the distribution tree consumed by the deploy stage
 set -euo pipefail
@@ -29,18 +31,54 @@ src="$cache/src"
 mkdir -p "$src" /out
 
 # --- sync ------------------------------------------------------------------
+# With a lock (MANIFEST_REV + PINS_FILE, produced by scripts/write-lock.py) the
+# sync is reproducible: the manifest is checked out at a commit rather than a
+# branch tip, and PINS_FILE pins the projects the manifest leaves on a branch.
+# Without one the branch tip is used, which is whatever it points at today.
+manifest_rev="${MANIFEST_REV:-}"
+if [ -n "$manifest_rev" ]; then
+  printf 'Manifest pinned to %s (locked)\n' "$manifest_rev"
+else
+  manifest_rev="$MANIFEST_BRANCH"
+  printf 'Manifest following branch %s (unlocked)\n' "$manifest_rev"
+fi
+
 cd "$src"
 repo init -g all \
   -u "$MANIFEST_URL" \
-  -b "$MANIFEST_BRANCH" \
+  -b "$manifest_rev" \
   -m "$MANIFEST_FILE" \
   --no-clone-bundle
+
+rm -f .repo/local_manifests/pins.xml
+if [ -n "${PINS_FILE:-}" ]; then
+  [ -f "$PINS_FILE" ] || { printf 'Build failed: PINS_FILE %s not found.\n' "$PINS_FILE" >&2; exit 1; }
+  mkdir -p .repo/local_manifests
+  cp "$PINS_FILE" .repo/local_manifests/pins.xml
+  printf 'Applied project pins from %s\n' "$PINS_FILE"
+fi
+
 repo sync -c -d -j"$JOBS" --force-sync --no-clone-bundle
 repo forall -c 'git lfs pull'
 
 # The manifest pins both forks to explicit commits; prove we got them.
 printf 'external/qemu            %s\n' "$(git -C external/qemu rev-parse HEAD)"
 printf 'hardware/google/gfxstream %s\n' "$(git -C hardware/google/gfxstream rev-parse HEAD)"
+
+# With a lock, assert every recorded project commit actually got checked out.
+if [ -n "${LOCK_FILE:-}" ] && [ -f "$LOCK_FILE" ]; then
+  rc_lock=0
+  while read -r kw path want; do
+    [ "$kw" = "PROJECT" ] || continue
+    got="$(git -C "$path" rev-parse HEAD 2>/dev/null || echo missing)"
+    if [ "$got" != "$want" ]; then
+      printf 'lock mismatch: %s is %s, lock says %s\n' "$path" "$got" "$want" >&2
+      rc_lock=1
+    fi
+  done < "$LOCK_FILE"
+  [ "$rc_lock" -eq 0 ] || { printf 'Build failed: the checkout does not match %s.\n' "$LOCK_FILE" >&2; exit 1; }
+  printf 'Checkout matches %s\n' "$LOCK_FILE"
+fi
 
 # --- build -----------------------------------------------------------------
 cd "$src/external/qemu"

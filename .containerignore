@@ -1,9 +1,12 @@
-# The build context only needs scripts/ and config/. Everything else is
-# excluded — sessions/ alone is ~80 MB of agent transcripts.
+# The build context only needs scripts/, config/, and the lock files.
+# Everything else is excluded.
 *
 
 !scripts/
 !config/
+!manifests/
+!revisions.lock
+!revisions-debug.lock
 
 # Nothing generated or proprietary, even under the allowed directories.
 **/*.img

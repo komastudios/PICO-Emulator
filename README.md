@@ -17,7 +17,10 @@ task                 # list tasks
 task build           # sync + compile + deploy image + extract to dist/
 sudo task install    # install the extracted package and systemd units on this host
 task run SYSTEM_IMAGES=/path/to/system-images
+task lock            # re-pin the manifest and project revisions
 ```
+
+Builds are reproducible by default: `revisions.lock` and `manifests/pins.xml` pin the manifest and every otherwise-floating project to a commit, and the build fails if the checkout does not match them.
 
 See [docs/build-pipeline.md](docs/build-pipeline.md) and [docs/host-install.md](docs/host-install.md).
 

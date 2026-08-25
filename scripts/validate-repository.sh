@@ -5,9 +5,10 @@ repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_dir"
 
 required=(
-  README.md REPRODUCIBILITY.md
+  README.md REPRODUCIBILITY.md Taskfile.yml
+  docs/build-pipeline.md docs/host-install.md
   patches/README.md
-  Containerfile .containerignore Makefile
+  Containerfile .containerignore
   scripts/container-build.sh scripts/container-entrypoint.sh
   scripts/install-pico-emulator.sh
   patches/pico-emulator-qemu-linux.patch
