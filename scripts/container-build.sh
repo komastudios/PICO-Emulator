@@ -25,6 +25,9 @@ JOBS="${JOBS:-$(nproc)}"
 # the distribution tree do not depend on the invoking environment.
 umask 022
 export TZ=UTC LC_ALL=C
+# Fixed hash seed: build-system Python (e.g. the NOTICE generator) iterates
+# sets, whose order otherwise changes with every process.
+export PYTHONHASHSEED=0
 if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
   export SOURCE_DATE_EPOCH
   printf 'SOURCE_DATE_EPOCH=%s (%s)\n' "$SOURCE_DATE_EPOCH" \

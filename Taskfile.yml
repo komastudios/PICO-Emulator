@@ -149,6 +149,14 @@ tasks:
       - scripts/write-lock.py --check
       - scripts/write-lock.py --debug --check
 
+  repro:check:
+    desc: Compare two extracted packages byte for byte (A=<dir> B=<dir>)
+    preconditions:
+      - sh: test -n '{{.A}}' && test -n '{{.B}}'
+        msg: "Pass both packages, e.g. task repro:check A=/path/a/linux-pico-package B=/path/b/linux-pico-package"
+    cmds:
+      - scripts/repro-check.sh '{{.A}}' '{{.B}}' '{{.DIST_DIR}}/repro-report.txt'
+
   verify:
     desc: Check repository completeness, script syntax, units and file modes
     cmds:
