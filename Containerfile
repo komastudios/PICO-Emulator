@@ -75,6 +75,9 @@ ARG PINS_FILE=
 # manifest commit, so __DATE__/__TIME__ and any timestamp the build embeds are
 # a property of the reviewed source rather than of when it was compiled.
 ARG SOURCE_DATE_EPOCH=
+# "none" keeps compilation deterministic and avoids the bundled sccache 0.3.0;
+# "auto" trades that for speed on development builds.
+ARG COMPILER_CACHE=none
 ENV TZ=UTC LC_ALL=C LANG=C.UTF-8
 
 COPY scripts/container-build.sh /usr/local/bin/container-build.sh
@@ -93,6 +96,7 @@ RUN MANIFEST_URL="${MANIFEST_URL}" \
     LOCK_FILE="${LOCK_FILE}" \
     PINS_FILE="${PINS_FILE}" \
     SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" \
+    COMPILER_CACHE="${COMPILER_CACHE}" \
     JOBS="${JOBS}" \
     CACHE_BUST="${CACHE_BUST}" \
     /usr/local/bin/container-build.sh

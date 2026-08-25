@@ -10,6 +10,7 @@
 #   PINS_FILE     optional: repo local manifest pinning otherwise-floating projects
 #   LOCK_FILE     optional: lock to assert the synced checkout against
 #   SOURCE_DATE_EPOCH optional: fixed build timestamp, from the locked commit
+#   COMPILER_CACHE    "none" (default), "auto", or a path to sccache/ccache
 # Output:
 #   /out/picoemulator — the distribution tree consumed by the deploy stage
 set -euo pipefail
@@ -96,11 +97,30 @@ if [ -n "${LOCK_FILE:-}" ] && [ -f "$LOCK_FILE" ]; then
 fi
 
 # --- build -----------------------------------------------------------------
+# The emulator's CMakeLists sets RULE_LAUNCH_COMPILE from OPTION_CCACHE, so a
+# compiler cache fronts *every* compile when one is found. rebuild.sh asks for
+# "auto"; our flag comes later on the command line and wins.
+#
+# Default off: a cache hit replays a stored object instead of compiling, which
+# would mask a reproducibility difference rather than prove its absence, and
+# the bundled sccache 0.3.0 fails the build outright when its server is slow to
+# start. Set COMPILER_CACHE=auto for a fast development build.
+compiler_cache="${COMPILER_CACHE:-none}"
+if [ "$compiler_cache" != "none" ]; then
+  # Keep the cache in the persisted mount; the container's HOME is discarded.
+  export SCCACHE_DIR="${SCCACHE_DIR:-$cache/sccache}"
+  mkdir -p "$SCCACHE_DIR"
+  printf 'Compiler cache: %s (SCCACHE_DIR=%s)\n' "$compiler_cache" "$SCCACHE_DIR"
+else
+  printf 'Compiler cache: disabled\n'
+fi
+
 cd "$src/external/qemu"
 rc=0
 ./android/rebuild.sh \
   --target linux-x86_64 \
   --test_jobs "$JOBS" \
+  --ccache "$compiler_cache" \
   --task-disable Clean \
   --task-disable CTest || rc=$?
 

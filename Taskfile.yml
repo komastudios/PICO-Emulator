@@ -43,6 +43,8 @@ vars:
     sh: sed -n 's/^SOURCE_DATE_EPOCH=//p' '{{.ROOT_DIR}}/revisions{{if eq (.DEBUG | default "0") "1"}}-debug{{end}}.lock' 2>/dev/null || true
   MANIFEST_URL: '{{.MANIFEST_URL | default "https://github.com/komastudios/PICO-Emulator-manifest.git"}}'
   MANIFEST_BRANCH: '{{.MANIFEST_BRANCH | default "pico-linux"}}'
+  # Compiler cache: "none" (deterministic, the default) or "auto" (faster).
+  COMPILER_CACHE: '{{.COMPILER_CACHE | default "none"}}'
   # Bump to force a re-sync and recompile even with a warm cache.
   CACHE_BUST: '{{.CACHE_BUST | default "0"}}'
   BUILD_FLAGS: '{{.BUILD_FLAGS | default ""}}'
@@ -76,6 +78,7 @@ tasks:
         --build-arg LOCK_FILE={{if .MANIFEST_REV}}/opt/pico/{{.LOCK_FILE}}{{end}}
         --build-arg PINS_FILE={{if .MANIFEST_REV}}/opt/pico/{{.PINS_FILE}}{{end}}
         --build-arg SOURCE_DATE_EPOCH={{.SOURCE_DATE_EPOCH}}
+        --build-arg COMPILER_CACHE={{.COMPILER_CACHE}}
         --build-arg JOBS={{.JOBS}}
         --build-arg CACHE_BUST={{.CACHE_BUST}}
         {{.BUILD_FLAGS}} .
@@ -188,6 +191,7 @@ tasks:
           MANIFEST_FILE   '{{.MANIFEST_FILE}}' \
           MANIFEST_REV    '{{if .MANIFEST_REV}}{{.MANIFEST_REV}}{{else}}(unlocked){{end}}' \
           SOURCE_DATE_EPOCH '{{if .SOURCE_DATE_EPOCH}}{{.SOURCE_DATE_EPOCH}}{{else}}(unset){{end}}' \
+          COMPILER_CACHE  '{{.COMPILER_CACHE}}' \
           LOCK_FILE       '{{.LOCK_FILE}}' \
           PINS_FILE       '{{.PINS_FILE}}' \
           CACHE_DIR       '{{.CACHE_DIR}}' \
