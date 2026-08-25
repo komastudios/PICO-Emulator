@@ -3,7 +3,8 @@
 
 Writes two files that the build consumes and that are committed to git:
 
-  <lock>       KEY=value lines: manifest URL/branch/file/commit, plus one
+  <lock>       KEY=value lines: manifest URL/branch/file/commit, the commit's
+               own timestamp as SOURCE_DATE_EPOCH, plus one
                "PROJECT <path> <commit>" line per project the build asserts on
                (every project declared directly in the top-level manifest and
                every project whose manifest revision is a branch name).
@@ -20,7 +21,9 @@ Usage:
     --check   do not write; exit 1 (with a diff) if the files would change
 """
 import argparse
+import datetime
 import difflib
+import json
 import os
 import re
 import subprocess
@@ -40,6 +43,24 @@ def ls_remote(url, ref):
         if name == ref:
             return sha
     sys.exit(f"error: {ref} not found in {url}")
+
+
+def commit_epoch(manifest_url, rev):
+    """The manifest commit's own committer timestamp, for SOURCE_DATE_EPOCH.
+
+    Binding the epoch to the reviewed commit keeps it stable across rebuilds,
+    unlike wall-clock time, and meaningful, unlike epoch zero.
+    """
+    m = re.match(r"https://github\.com/([^/]+)/([^/]+?)(?:\.git)?$", manifest_url)
+    if not m:
+        sys.exit(f"error: only GitHub manifest URLs are supported, got {manifest_url}")
+    api = f"https://api.github.com/repos/{m.group(1)}/{m.group(2)}/commits/{rev}"
+    req = urllib.request.Request(api, headers={"Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        data = json.load(r)
+    stamp = data["commit"]["committer"]["date"]          # e.g. 2026-08-25T14:19:12Z
+    return int(datetime.datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ")
+               .replace(tzinfo=datetime.timezone.utc).timestamp())
 
 
 def raw_url(manifest_url, rev, path):
@@ -105,7 +126,8 @@ def build(debug):
             f"MANIFEST_URL={MANIFEST_URL}",
             f"MANIFEST_BRANCH={MANIFEST_BRANCH}",
             f"MANIFEST_FILE={manifest_file}",
-            f"MANIFEST_REV={manifest_rev}"]
+            f"MANIFEST_REV={manifest_rev}",
+            f"SOURCE_DATE_EPOCH={commit_epoch(MANIFEST_URL, manifest_rev)}"]
     entries = sorted(pinned + [(path, sha) for path, _, _, sha in floating])
     lock += [f"PROJECT {path} {sha}" for path, sha in entries]
 

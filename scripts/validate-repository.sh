@@ -38,12 +38,18 @@ if command -v systemd-analyze >/dev/null; then
   systemd-analyze verify systemd/*.service
 fi
 
-# Only files that carry an executable bit may be executable, and only scripts.
-while IFS= read -r -d '' path; do
-  case "$path" in
-    ./scripts/*.sh|./scripts/*.py) ;;
-    *) printf 'unexpected executable file: %s\n' "$path" >&2; exit 1 ;;
-  esac
-done < <(find . -path ./.git -prune -o -type f -perm -u+x -print0)
+# Only scripts may carry an executable bit. Checked against what git tracks,
+# so build output under dist/ and a local .cache/ are out of scope.
+if git rev-parse --git-dir >/dev/null 2>&1; then
+  while IFS= read -r mode _ _ path; do
+    [ "$mode" = 100755 ] || continue
+    case "$path" in
+      scripts/*.sh|scripts/*.py) ;;
+      *) printf 'unexpected executable file: %s\n' "$path" >&2; exit 1 ;;
+    esac
+  done < <(git ls-files -s)
+else
+  printf 'not a git checkout; skipping the file mode check\n' >&2
+fi
 
 printf '%s\n' 'repository completeness checks passed'

@@ -3,6 +3,7 @@ MANIFEST_URL=https://github.com/komastudios/PICO-Emulator-manifest.git
 MANIFEST_BRANCH=pico-linux
 MANIFEST_FILE=pico/emu-35-rom.xml
 MANIFEST_REV=7b3fe0756dea84f8a4411fe9e73a0de7210e3f53
+SOURCE_DATE_EPOCH=1787667552
 PROJECT external/qemu b461fb8ca282537c4285186e7fb9932f1ef5d2f4
 PROJECT hardware/google/aemu 498005f0a34f4e99960576c2d925da64d26a5c3d
 PROJECT hardware/google/gfxstream c7cdba8b081bfd29a89f300fb5358ed7add03b6c

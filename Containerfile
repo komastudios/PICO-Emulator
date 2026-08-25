@@ -15,7 +15,9 @@
 # is ~108 GB once synced. Without the mount the build still works, but nothing
 # is reused and the source tree is removed before the layer is committed.
 
-ARG DEBIAN_IMAGE=docker.io/library/debian:13-slim
+# Pinned by digest, not tag: a tag is mutable, and the toolchain layer it
+# produces is an input to every binary this build emits.
+ARG DEBIAN_IMAGE=docker.io/library/debian@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f
 
 # ---------------------------------------------------------------- base ----
 FROM ${DEBIAN_IMAGE} AS base
@@ -69,6 +71,11 @@ ARG CACHE_BUST=0
 ARG MANIFEST_REV=
 ARG LOCK_FILE=
 ARG PINS_FILE=
+# Normalized build environment. SOURCE_DATE_EPOCH comes from the locked
+# manifest commit, so __DATE__/__TIME__ and any timestamp the build embeds are
+# a property of the reviewed source rather than of when it was compiled.
+ARG SOURCE_DATE_EPOCH=
+ENV TZ=UTC LC_ALL=C LANG=C.UTF-8
 
 COPY scripts/container-build.sh /usr/local/bin/container-build.sh
 COPY manifests /opt/pico/manifests
@@ -85,6 +92,7 @@ RUN MANIFEST_URL="${MANIFEST_URL}" \
     MANIFEST_REV="${MANIFEST_REV}" \
     LOCK_FILE="${LOCK_FILE}" \
     PINS_FILE="${PINS_FILE}" \
+    SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" \
     JOBS="${JOBS}" \
     CACHE_BUST="${CACHE_BUST}" \
     /usr/local/bin/container-build.sh

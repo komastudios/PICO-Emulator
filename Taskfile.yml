@@ -20,7 +20,10 @@ vars:
   # Extra global podman flags, before the subcommand.
   PODMAN_FLAGS: '{{.PODMAN_FLAGS | default ""}}'
   IMAGE: '{{.IMAGE | default "localhost/pico-emulator"}}'
-  DEBIAN_IMAGE: '{{.DEBIAN_IMAGE | default "docker.io/library/debian:13-slim"}}'
+  # Digest-pinned: the base layer is an input to every binary the build emits.
+  # Re-resolve with: podman pull docker.io/library/debian:13-slim &&
+  #   podman image inspect docker.io/library/debian:13-slim --format '{{"{{"}}index .RepoDigests 0{{"}}"}}'
+  DEBIAN_IMAGE: '{{.DEBIAN_IMAGE | default "docker.io/library/debian@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f"}}'
   CACHE_DIR: '{{.CACHE_DIR | default (printf "%s/.cache" .ROOT_DIR)}}'
   DIST_DIR: '{{.DIST_DIR | default (printf "%s/dist" .ROOT_DIR)}}'
   JOBS:
@@ -35,6 +38,9 @@ vars:
   # Read the locked manifest commit; empty if the lock is missing.
   MANIFEST_REV:
     sh: sed -n 's/^MANIFEST_REV=//p' '{{.ROOT_DIR}}/revisions{{if eq (.DEBUG | default "0") "1"}}-debug{{end}}.lock' 2>/dev/null || true
+  # Fixed build timestamp, recorded in the lock alongside the manifest commit.
+  SOURCE_DATE_EPOCH:
+    sh: sed -n 's/^SOURCE_DATE_EPOCH=//p' '{{.ROOT_DIR}}/revisions{{if eq (.DEBUG | default "0") "1"}}-debug{{end}}.lock' 2>/dev/null || true
   MANIFEST_URL: '{{.MANIFEST_URL | default "https://github.com/komastudios/PICO-Emulator-manifest.git"}}'
   MANIFEST_BRANCH: '{{.MANIFEST_BRANCH | default "pico-linux"}}'
   # Bump to force a re-sync and recompile even with a warm cache.
@@ -69,6 +75,7 @@ tasks:
         --build-arg MANIFEST_REV={{.MANIFEST_REV}}
         --build-arg LOCK_FILE={{if .MANIFEST_REV}}/opt/pico/{{.LOCK_FILE}}{{end}}
         --build-arg PINS_FILE={{if .MANIFEST_REV}}/opt/pico/{{.PINS_FILE}}{{end}}
+        --build-arg SOURCE_DATE_EPOCH={{.SOURCE_DATE_EPOCH}}
         --build-arg JOBS={{.JOBS}}
         --build-arg CACHE_BUST={{.CACHE_BUST}}
         {{.BUILD_FLAGS}} .
@@ -180,6 +187,7 @@ tasks:
           MANIFEST_BRANCH '{{.MANIFEST_BRANCH}}' \
           MANIFEST_FILE   '{{.MANIFEST_FILE}}' \
           MANIFEST_REV    '{{if .MANIFEST_REV}}{{.MANIFEST_REV}}{{else}}(unlocked){{end}}' \
+          SOURCE_DATE_EPOCH '{{if .SOURCE_DATE_EPOCH}}{{.SOURCE_DATE_EPOCH}}{{else}}(unset){{end}}' \
           LOCK_FILE       '{{.LOCK_FILE}}' \
           PINS_FILE       '{{.PINS_FILE}}' \
           CACHE_DIR       '{{.CACHE_DIR}}' \

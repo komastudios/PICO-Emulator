@@ -5,7 +5,7 @@ This file separates repository-owned configuration from proprietary/large inputs
 ## Source revisions
 
 - Manifest (original): `https://github.com/Pico-Developer/PICO-Emulator-manifest.git`, `pico/emu-35-rom.xml`
-- Manifest (forked, current): `https://github.com/komastudios/PICO-Emulator-manifest.git`, branch `pico-linux`, `pico/emu-35-rom.xml` (or `pico/emu-35-rom-debug.xml`), tip `e018335`
+- Manifest (forked, current): `https://github.com/komastudios/PICO-Emulator-manifest.git`, branch `pico-linux`, `pico/emu-35-rom.xml` (or `pico/emu-35-rom-debug.xml`), tip `7b3fe07`, recorded in `revisions.lock`
 - PICO qemu base: `8ca9387f0822db1cb0dfc8ba724db212084bb2df`
 - PICO gfxstream base: `17b28f4e8c38b1aaadb620072786a0cbeba7362b`
 - Experimental upstream SwiftShader base: `6b8d31709ad185dbd64e80865e830a9dbe8e7559` (not deployed)
@@ -15,10 +15,12 @@ The modifications on top of those bases are maintained as fork branches on the `
 
 | Component | Fork branch | Tip | Reproduces the deployed binary |
 | --- | --- | --- | --- |
-| qemu | `komastudios/PICO-Emulator-qemu` @ `pico-linux` | `b461fb8c` | Yes |
-| gfxstream | `komastudios/PICO-Emulator-gfxstream` @ `pico-linux-debug` | `43ddfc66` | No — the recorded hashes predate commit `43ddfc66`; `3d7006f8` reproduces them |
-| gfxstream | `komastudios/PICO-Emulator-gfxstream` @ `pico-linux` | `f7f8c7ec` | **No** — see below; the recorded container-build hash predates commit `f7f8c7ec` |
+| qemu | `komastudios/PICO-Emulator-qemu` @ `pico-linux` | `b461fb8c` | Source of the deployed binary |
+| gfxstream | `komastudios/PICO-Emulator-gfxstream` @ `pico-linux` | `c7cdba8b` | Source of the deployed binary |
+| gfxstream | `komastudios/PICO-Emulator-gfxstream` @ `pico-linux-debug` | `c4af3b55` | Not deployed — instrumentation variant |
 | SwiftShader | `komastudios/swiftshader` @ `pico-linux` | `20fc43c1` | Not deployed |
+
+The tips above are the branch heads; the commits the deployed binaries were actually built from are the ones in `revisions.lock`, which the build asserts against after syncing. "Source of the deployed binary" means exactly that — it does **not** mean a rebuild reproduces the recorded hash; see *Reproducibility status* below.
 
 ## External archive hashes
 
@@ -67,7 +69,7 @@ The lavapipe hash is distro-build-specific. A different supported Mesa build nee
 
 ## Currently deployed artifacts (container build, `pico-linux`)
 
-Built by `task build` from the forked manifest `pico/emu-35-rom.xml` on Debian 13 and installed with `scripts/install-pico-emulator.sh`. This is what the host runs now. Rebuilt 2026-08-25 from gfxstream `pico-linux` @ `c7cdba8b` (the YUV readback crash fix); `libgfxstream_backend.so` now has Build ID `09f3c1b841357837d86fe5f8652c13d20c07e3c5`. `emulator` and `qemu-system-x86_64` also changed hash: the cache-busted rebuild recompiled the whole tree and these binaries are not bit-reproducible across builds, even though no source of theirs changed. Only lavapipe, copied in verbatim by the deploy stage, is unchanged. A rebuild needs `make CACHE_BUST=$(date +%s) build` — without it podman reuses the cached build layer and silently ships the previous library.
+Built by `task build` from the forked manifest `pico/emu-35-rom.xml` on Debian 13 and installed with `scripts/install-pico-emulator.sh`. This is what the host runs now. Rebuilt 2026-08-25 from gfxstream `pico-linux` @ `c7cdba8b` (the YUV readback crash fix); `libgfxstream_backend.so` now has Build ID `09f3c1b841357837d86fe5f8652c13d20c07e3c5`. `emulator` and `qemu-system-x86_64` also changed hash: the cache-busted rebuild recompiled the whole tree and these binaries are not bit-reproducible across builds, even though no source of theirs changed. Only lavapipe, copied in verbatim by the deploy stage, is unchanged. A rebuild needs `task build CACHE_BUST=$(date +%s)` — without it podman reuses the cached build layer and silently ships the previous library.
 
 | Relative path under `picoemulator/` | SHA-256 |
 | --- | --- |
@@ -78,7 +80,30 @@ Built by `task build` from the forked manifest `pico/emu-35-rom.xml` on Debian 1
 
 The lavapipe hash is unchanged — it is the distribution's own Mesa build, copied in by the deploy stage.
 
-**These hashes are a record, not an acceptance test.** The emulator embeds a timestamped build ID (this one reports `0.7.6.0 (build_id 2608241632)`), so a rebuild produces different hashes by construction. Accept a container build with the functional checks in the clean-room checklist, not hash equality.
+### Reproducibility status
+
+**These hashes are a record, not an acceptance test.** Accept a container build with the functional checks in the clean-room checklist, not hash equality.
+
+Rebuilding from the same locked revisions on the same host does **not** reproduce them. Measured on 2026-08-25, comparing the deployed `libgfxstream_backend.so` (`d86f2233…`) against a fresh `task build` from the same lock (`a520b675…`):
+
+| Observation | Result |
+| --- | --- |
+| Differing bytes | 111,972 of ~150 MB (≈0.07%) |
+| ELF sections | `.text` and `.rodata` differ; `.data` and `.comment` identical |
+| Build ID | differs (`--build-id=sha1`, so it follows the content rather than causing the difference) |
+| Relinking the same objects, twice | byte-identical — the link step is deterministic |
+| Distribution copy vs extracted artifact | byte-identical — `task extract` is faithful |
+
+So the divergence is in compilation, not in linking, packaging or embedded build metadata — the timestamped build ID alone does not explain it, because it does not reach `.text`. The cause is **not yet attributed**: the rebuild overwrote the shared build cache, destroying the earlier object files, and only the deployed binary survives. Candidates are a dirty tree at the time of the earlier build, a toolchain difference from the then-unpinned base image tag, or path/ordering effects reaching `.rodata`.
+
+Controls now in place, from the reproducible-builds practice notes:
+
+- the base image is pinned by **digest**, not by the mutable `debian:13-slim` tag;
+- `SOURCE_DATE_EPOCH` is recorded in `revisions.lock`, derived from the locked manifest commit's own timestamp, and exported into the build;
+- the build runs with `TZ=UTC`, `LC_ALL=C` and `umask 022`;
+- `repo` syncs the manifest at a **commit** with project pins, and the build fails if the checkout does not match the lock.
+
+Still outstanding: a two-clean-room double build, in **separate** cache roots and with any compiler cache disabled, compared with `diffoscope`. Until that runs, treat byte-reproducibility as unverified rather than as either achieved or impossible.
 
 ### Verified after installation
 

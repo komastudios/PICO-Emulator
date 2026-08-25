@@ -67,6 +67,26 @@ task lock:check    # fail with a diff if the lock is stale; good for CI
 
 Update the lock deliberately, as its own commit: it is the record of what a released binary was built from.
 
+## Determinism controls
+
+The lock fixes *what* is built; these fix *how*, so that two builds of the same lock differ as little as the toolchain allows:
+
+| Control | Where |
+| --- | --- |
+| Base image pinned by digest, not by the mutable `debian:13-slim` tag | `DEBIAN_IMAGE` in `Taskfile.yml`, default in `Containerfile` |
+| `SOURCE_DATE_EPOCH`, derived from the locked manifest commit's own timestamp | recorded in `revisions.lock` by `scripts/write-lock.py`, exported by `container-build.sh` |
+| `TZ=UTC`, `LC_ALL=C` | `Containerfile` `ENV`, re-exported in `container-build.sh` |
+| `umask 022` | `container-build.sh`, so distribution file modes do not depend on the caller |
+
+Deriving the epoch from the reviewed commit rather than wall-clock time keeps `__DATE__`/`__TIME__` and any embedded timestamp a property of the source. Re-resolve the base image digest when you intend to move it:
+
+```bash
+podman pull docker.io/library/debian:13-slim
+podman image inspect docker.io/library/debian:13-slim --format '{{index .RepoDigests 0}}'
+```
+
+**This does not yet make the build byte-reproducible.** A rebuild from an identical lock has been measured to differ inside `.text` and `.rodata`, while the link and packaging steps are deterministic; see *Reproducibility status* in `MANIFEST.md` for the measurements and what remains unattributed. Verifying it properly means two builds in **separate** cache roots — the shared `/cache` mount is the opposite of an isolated root — compared with `diffoscope`, and with any compiler cache disabled, since a cache hit replays a stored object instead of compiling and would mask a difference rather than prove its absence.
+
 ## Tolerated build failure
 
 `rebuild.sh` runs an acceleration check at the very end that cannot load `libnvidia-ml.so.1` on a CPU-only host, so it exits non-zero *after* the distribution is complete. `container-build.sh` tolerates exactly that case: it verifies `emulator`, `qemu-system-x86_64` and `libgfxstream_backend.so` all exist and are non-empty, and only then treats the exit status as the known NVML check. Any other failure is fatal.

@@ -8,6 +8,8 @@
 #   MANIFEST_URL, MANIFEST_BRANCH, MANIFEST_FILE, JOBS
 #   MANIFEST_REV  optional: manifest commit to pin instead of MANIFEST_BRANCH
 #   PINS_FILE     optional: repo local manifest pinning otherwise-floating projects
+#   LOCK_FILE     optional: lock to assert the synced checkout against
+#   SOURCE_DATE_EPOCH optional: fixed build timestamp, from the locked commit
 # Output:
 #   /out/picoemulator — the distribution tree consumed by the deploy stage
 set -euo pipefail
@@ -16,6 +18,19 @@ set -euo pipefail
 : "${MANIFEST_BRANCH:?}"
 : "${MANIFEST_FILE:?}"
 JOBS="${JOBS:-$(nproc)}"
+
+# Normalize the sources of nondeterminism this build can control: a fixed
+# timestamp, a fixed locale and timezone, and a fixed umask so file modes in
+# the distribution tree do not depend on the invoking environment.
+umask 022
+export TZ=UTC LC_ALL=C
+if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
+  export SOURCE_DATE_EPOCH
+  printf 'SOURCE_DATE_EPOCH=%s (%s)\n' "$SOURCE_DATE_EPOCH" \
+    "$(TZ=UTC date -u -d "@$SOURCE_DATE_EPOCH" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown)"
+else
+  printf 'SOURCE_DATE_EPOCH is unset; embedded timestamps will vary between builds.\n' >&2
+fi
 
 if mountpoint -q /cache 2>/dev/null; then
   cache=/cache
