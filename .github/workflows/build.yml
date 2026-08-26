@@ -263,7 +263,10 @@ jobs:
   package:
     name: package and verify
     needs: [keys, compile]
-    if: needs.compile.result == 'success'
+    # always() is load-bearing: a skip propagates down the whole dependency
+    # graph, so when builder and sources are skipped as already promoted this
+    # job is skipped too unless it opts out, even though compile succeeded.
+    if: always() && needs.compile.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
