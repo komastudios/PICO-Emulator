@@ -119,8 +119,14 @@ tasks:
       - |
         cid="$({{.PODMAN}} {{.PODMAN_FLAGS}} create {{.IMAGE}}:{{.TAG}})"
         trap '{{.PODMAN}} {{.PODMAN_FLAGS}} rm -f "$cid" >/dev/null 2>&1' EXIT
+        # Through a tar stream rather than straight onto the filesystem: a
+        # rootful podman writes a direct copy as root, and the rest of this
+        # task then cannot write into it. tar runs as the caller, so the tree
+        # belongs to them; -p keeps the archived modes for a non-root extract.
         {{.PODMAN}} {{.PODMAN_FLAGS}} cp \
-          "$cid:/opt/android/PICO/linux-pico-package" '{{.DIST_DIR}}/linux-pico-package'
+          "$cid:/opt/android/PICO/linux-pico-package" - | tar -C '{{.DIST_DIR}}' -xpf -
+        test -x '{{.DIST_DIR}}/linux-pico-package/picoemulator/emulator' || {
+          echo "extract produced no package tree" >&2; exit 1; }
       - printf '%s\n' '{{.TAG}}' > '{{.DIST_DIR}}/linux-pico-package/.build-variant'
       - |
         cd '{{.DIST_DIR}}/linux-pico-package' && sha256sum \
