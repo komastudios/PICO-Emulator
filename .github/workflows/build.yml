@@ -48,6 +48,7 @@ on:
       - Taskfile.yml
       - scripts/**
       - .github/workflows/build.yml
+      - .github/actions/setup-tools/action.yml
 
 permissions:
   contents: read
@@ -59,10 +60,11 @@ concurrency:
 
 env:
   DEBUG: ${{ inputs.debug && '1' || '0' }}
-  PODMAN: sudo podman
   # Rootful podman avoids the rootless cgroup and storage quirks on runners;
-  # storage is pointed at the largest disk by ci-cleanup.
-  ORAS_VERSION: 1.2.2
+  # storage is pointed at a disk with room by ci-cleanup. Task reads this as
+  # the PODMAN template variable (the environment is its lowest-priority
+  # variable source), so every `task` call below builds with `sudo podman`.
+  PODMAN: sudo podman
 
 jobs:
   keys:
@@ -76,14 +78,22 @@ jobs:
       builder_ref: ${{ steps.keys.outputs.builder_ref }}
       sources_exists: ${{ steps.probe.outputs.sources_exists }}
       builder_exists: ${{ steps.probe.outputs.builder_exists }}
+      # Only a dispatch can turn the second build off; on push `inputs` is
+      # empty and `inputs.run_second_build == false` would be true.
+      second_build: ${{ (github.event_name != 'workflow_dispatch' || inputs.run_second_build) && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-tools
+        with:
+          podman: 'false'
       - id: keys
+        env:
+          IN_SOURCES_REF: ${{ inputs.sources_ref }}
+          IN_BUILDER_REF: ${{ inputs.builder_ref }}
         run: |
           eval "$(task lock:key)"
-          [ -n "${{ inputs.sources_ref }}" ] && SOURCES_REF='${{ inputs.sources_ref }}'
-          [ -n "${{ inputs.builder_ref }}" ] && BUILDER_REF='${{ inputs.builder_ref }}'
+          if [ -n "$IN_SOURCES_REF" ]; then SOURCES_REF="$IN_SOURCES_REF"; fi
+          if [ -n "$IN_BUILDER_REF" ]; then BUILDER_REF="$IN_BUILDER_REF"; fi
           {
             echo "lock_key=$LOCK_KEY"; echo "builder_key=$BUILDER_KEY"
             echo "sources_ref=$SOURCES_REF"; echo "builder_ref=$BUILDER_REF"
@@ -91,12 +101,25 @@ jobs:
       - id: probe
         env:
           GH_TOKEN: ${{ github.token }}
+          SOURCES_REF: ${{ steps.keys.outputs.sources_ref }}
+          BUILDER_REF: ${{ steps.keys.outputs.builder_ref }}
         run: |
           echo "$GH_TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          if scripts/promote.sh exists '${{ steps.keys.outputs.sources_ref }}'; then s=true; else s=false; fi
-          if scripts/promote.sh exists '${{ steps.keys.outputs.builder_ref }}'; then b=true; else b=false; fi
+          if scripts/promote.sh exists "$SOURCES_REF"; then s=true; else s=false; fi
+          if scripts/promote.sh exists "$BUILDER_REF"; then b=true; else b=false; fi
           echo "sources_exists=$s" | tee -a "$GITHUB_OUTPUT"
           echo "builder_exists=$b" | tee -a "$GITHUB_OUTPUT"
+      - name: Summary
+        env:
+          SOURCES_REF: ${{ steps.keys.outputs.sources_ref }}
+          BUILDER_REF: ${{ steps.keys.outputs.builder_ref }}
+        run: |
+          {
+            echo "| stage | reference | promoted |"
+            echo "| --- | --- | --- |"
+            echo "| sources | \`$SOURCES_REF\` | ${{ steps.probe.outputs.sources_exists }} |"
+            echo "| builder | \`$BUILDER_REF\` | ${{ steps.probe.outputs.builder_exists }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   builder:
     name: toolchain image
@@ -110,10 +133,11 @@ jobs:
       - name: Build and push
         env:
           GH_TOKEN: ${{ github.token }}
+          BUILDER_REF: ${{ needs.keys.outputs.builder_ref }}
         run: |
           echo "$GH_TOKEN" | $PODMAN login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          task builder:image BUILDER_REF='${{ needs.keys.outputs.builder_ref }}'
-          task builder:push BUILDER_REF='${{ needs.keys.outputs.builder_ref }}'
+          task builder:image BUILDER_REF="$BUILDER_REF"
+          task builder:push BUILDER_REF="$BUILDER_REF"
 
   sources:
     name: source archive
@@ -127,24 +151,42 @@ jobs:
       - id: disk
         run: task ci:cleanup | tee -a "$GITHUB_OUTPUT"
       - name: Sync, trim, archive
+        env:
+          CACHE_DIR: ${{ steps.disk.outputs.CACHE_DIR }}
+          GRAPHROOT: ${{ steps.disk.outputs.GRAPHROOT }}
+          SYNC_DEPTH: ${{ inputs.sync_depth || '1' }}
         run: |
           task sources \
-            CACHE_DIR='${{ steps.disk.outputs.CACHE_DIR }}' \
-            PODMAN_FLAGS='--root ${{ steps.disk.outputs.GRAPHROOT }}' \
-            SYNC_DEPTH='${{ inputs.sync_depth || '1' }}' JOBS=4
-          df -h "${{ steps.disk.outputs.CACHE_DIR }}"
+            CACHE_DIR="$CACHE_DIR" \
+            PODMAN_FLAGS="--root $GRAPHROOT" \
+            SYNC_DEPTH="$SYNC_DEPTH" JOBS=4
+          df -h "$CACHE_DIR" "$GRAPHROOT"
       - name: Promote
         env:
           GH_TOKEN: ${{ github.token }}
+          CACHE_DIR: ${{ steps.disk.outputs.CACHE_DIR }}
+          SOURCES_REF: ${{ needs.keys.outputs.sources_ref }}
         run: |
           echo "$GH_TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          task sources:push CACHE_DIR='${{ steps.disk.outputs.CACHE_DIR }}' \
-            SOURCES_REF='${{ needs.keys.outputs.sources_ref }}'
+          task sources:push CACHE_DIR="$CACHE_DIR" SOURCES_REF="$SOURCES_REF"
+      - name: Record the archive identity
+        if: always()
+        env:
+          CACHE_DIR: ${{ steps.disk.outputs.CACHE_DIR }}
+          LOCK_KEY: ${{ needs.keys.outputs.lock_key }}
+        run: |
+          sha="$(cat "$CACHE_DIR/sources-$LOCK_KEY.tar.sha256" 2>/dev/null || echo '(not produced)')"
+          {
+            echo "## sources $LOCK_KEY"
+            echo "- uncompressed content sha256: \`$sha\`"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Archive listing
         uses: actions/upload-artifact@v4
         with:
           name: sources-${{ needs.keys.outputs.lock_key }}-listing
-          path: ${{ steps.disk.outputs.CACHE_DIR }}/sources-*.tar.zst.list
+          path: |
+            ${{ steps.disk.outputs.CACHE_DIR }}/sources-*.tar.zst.list
+            ${{ steps.disk.outputs.CACHE_DIR }}/sources-*.tar.sha256
           retention-days: 90
 
   compile:
@@ -157,7 +199,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        run: ${{ fromJSON(inputs.run_second_build == false && '["a"]' || '["a","b"]') }}
+        run: ${{ fromJSON(needs.keys.outputs.second_build == 'true' && '["a","b"]' || '["a"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-tools
@@ -166,22 +208,41 @@ jobs:
       - name: Fetch the source archive and builder image
         env:
           GH_TOKEN: ${{ github.token }}
+          CACHE_DIR: ${{ steps.disk.outputs.CACHE_DIR }}
+          GRAPHROOT: ${{ steps.disk.outputs.GRAPHROOT }}
+          SOURCES_REF: ${{ needs.keys.outputs.sources_ref }}
+          BUILDER_REF: ${{ needs.keys.outputs.builder_ref }}
+          LOCK_KEY: ${{ needs.keys.outputs.lock_key }}
         run: |
           echo "$GH_TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          echo "$GH_TOKEN" | $PODMAN --root '${{ steps.disk.outputs.GRAPHROOT }}' login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          task sources:pull CACHE_DIR='${{ steps.disk.outputs.CACHE_DIR }}' \
-            SOURCES_REF='${{ needs.keys.outputs.sources_ref }}'
-          $PODMAN --root '${{ steps.disk.outputs.GRAPHROOT }}' pull '${{ needs.keys.outputs.builder_ref }}'
-          digest="$($PODMAN --root '${{ steps.disk.outputs.GRAPHROOT }}' image inspect '${{ needs.keys.outputs.builder_ref }}' --format '{{ index .RepoDigests 0 }}')"
+          echo "$GH_TOKEN" | $PODMAN --root "$GRAPHROOT" login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          task sources:pull CACHE_DIR="$CACHE_DIR" SOURCES_REF="$SOURCES_REF"
+          $PODMAN --root "$GRAPHROOT" pull "$BUILDER_REF"
+          digest="$($PODMAN --root "$GRAPHROOT" image inspect "$BUILDER_REF" --format '{{ index .RepoDigests 0 }}')"
           echo "BUILDER_DIGEST=$digest" | tee -a "$GITHUB_ENV"
+          {
+            echo "## compile ${{ matrix.run }}"
+            echo "- sources content sha256: \`$(cat "$CACHE_DIR/sources-$LOCK_KEY.tar.sha256")\`"
+            echo "- builder: \`$digest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Compile
+        env:
+          CACHE_DIR: ${{ steps.disk.outputs.CACHE_DIR }}
+          GRAPHROOT: ${{ steps.disk.outputs.GRAPHROOT }}
         run: |
           task compile \
-            CACHE_DIR='${{ steps.disk.outputs.CACHE_DIR }}' \
-            PODMAN_FLAGS='--root ${{ steps.disk.outputs.GRAPHROOT }}' \
+            CACHE_DIR="$CACHE_DIR" \
+            PODMAN_FLAGS="--root $GRAPHROOT" \
             BUILDER_IMAGE="$BUILDER_DIGEST" JOBS=4 COMPILER_CACHE=none \
+            DISCARD_SOURCE_ARCHIVE=1 \
             CACHE_BUST='${{ github.run_id }}-${{ matrix.run }}' \
             2>&1 | tee build-${{ matrix.run }}.log
+      - name: Disk after the build
+        if: always()
+        env:
+          CACHE_DIR: ${{ steps.disk.outputs.CACHE_DIR }}
+          GRAPHROOT: ${{ steps.disk.outputs.GRAPHROOT }}
+        run: df -h "$CACHE_DIR" "$GRAPHROOT"
       - name: Upload the package archive
         uses: actions/upload-artifact@v4
         with:
@@ -202,24 +263,34 @@ jobs:
   package:
     name: package and verify
     needs: [keys, compile]
-    if: always() && needs.compile.result == 'success'
+    if: needs.compile.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-tools
+        with:
+          diffoscope: 'true'
+      - id: disk
+        run: task ci:cleanup | tee -a "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
           pattern: picoemulator-${{ needs.keys.outputs.lock_key }}-*
           path: in
       - name: Runtime image and package from build a
+        env:
+          GRAPHROOT: ${{ steps.disk.outputs.GRAPHROOT }}
         run: |
-          task package PACKAGE="$(ls in/picoemulator-*-a/picoemulator-*.tar.zst)"
+          task package PODMAN_FLAGS="--root $GRAPHROOT" \
+            PACKAGE="$(ls in/picoemulator-*-a/picoemulator-*.tar.zst)"
           mv dist/linux-pico-package dist/package-a
       - name: Compare with build b
-        if: inputs.run_second_build != false
+        if: needs.keys.outputs.second_build == 'true'
+        env:
+          GRAPHROOT: ${{ steps.disk.outputs.GRAPHROOT }}
         run: |
-          task package PACKAGE="$(ls in/picoemulator-*-b/picoemulator-*.tar.zst)"
+          task package PODMAN_FLAGS="--root $GRAPHROOT" \
+            PACKAGE="$(ls in/picoemulator-*-b/picoemulator-*.tar.zst)"
           mv dist/linux-pico-package dist/package-b
           task repro:check A=dist/package-a B=dist/package-b
       - name: Record the result
@@ -230,6 +301,7 @@ jobs:
             echo; echo '```'; cat dist/package-a/SHA256SUMS; echo '```'
             echo; echo "- sources: \`${{ needs.keys.outputs.sources_ref }}\`"
             echo "- builder: \`${{ needs.keys.outputs.builder_ref }}\`"
+            echo "- second build compared: ${{ needs.keys.outputs.second_build }}"
             if [ -f dist/repro-report.txt ]; then echo; echo '```'; head -40 dist/repro-report.txt; echo '```'; fi
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload the package
