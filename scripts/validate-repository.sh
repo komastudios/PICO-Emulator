@@ -29,7 +29,7 @@ required=(
   scripts/build-sync.sh scripts/build-trim.sh scripts/build-compile.sh
   scripts/build-package.sh scripts/lib/build-env.sh
   scripts/source-trim.txt scripts/source-required.txt scripts/source-exclude.txt
-  scripts/promote.sh scripts/ci-cleanup.sh
+  scripts/promote.sh scripts/ci-cleanup.sh scripts/make-release.sh
   .github/workflows/ci.yml .github/workflows/build.yml
   .github/actions/setup-tools/action.yml
   manifests/pins.xml manifests/pins-debug.xml

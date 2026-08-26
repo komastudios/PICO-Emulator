@@ -299,6 +299,17 @@ tasks:
     cmds:
       - scripts/ci-cleanup.sh
 
+  release:
+    desc: "Stage 5: self-contained release archive from an extracted package (PACKAGE_DIR=<dir>)"
+    vars:
+      PACKAGE_DIR: '{{.PACKAGE_DIR | default (printf "%s/linux-pico-package" .DIST_DIR)}}'
+      VERSION: '{{.VERSION | default ""}}'
+    preconditions:
+      - sh: test -x '{{.PACKAGE_DIR}}/picoemulator/emulator'
+        msg: "No extracted package at {{.PACKAGE_DIR}}; run `task package` or `task build` first."
+    cmds:
+      - scripts/make-release.sh --package '{{.PACKAGE_DIR}}' --out '{{.DIST_DIR}}' --lock-key '{{.LOCK_KEY}}' {{if .VERSION}}--version '{{.VERSION}}'{{end}}
+
   repro:check:
     desc: Compare two extracted packages byte for byte (A=<dir> B=<dir>)
     preconditions:

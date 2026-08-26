@@ -7,8 +7,11 @@
 # sources: lock-governed repo sync, trimmed to Linux inputs, pushed to ghcr.io
 #          as sources:<LOCK_KEY>. Skipped when that tag already exists.
 # builder: toolchain image, pushed as builder:<BUILDER_KEY>. Skipped likewise.
-# compile: rebuild.sh from the promoted archive, twice on independent runners.
-# package: runtime image from the archive, extract, compare a against b.
+# compile: rebuild.sh from the promoted archive. One leg on any branch; two
+#          legs on independent runners on the `snapshot` branch.
+# package: runtime image from the archive, extract; on `snapshot` compare a
+#          against b and, only if they are byte-identical, publish a release
+#          archive as tag v0.<commit count> with a GitHub Release.
 name: build
 
 on:
@@ -31,15 +34,19 @@ on:
         type: boolean
         default: false
       run_second_build:
-        description: Compile twice on separate runners and compare
+        description: Compile twice on separate runners and compare (always on for snapshot)
         type: boolean
-        default: true
+        default: false
+      publish:
+        description: Publish a release when the two builds agree (always on for snapshot)
+        type: boolean
+        default: false
       sync_depth:
         description: repo init --depth for the sources stage (empty = full history)
         type: string
         default: '1'
   push:
-    branches: [main]
+    branches: ['**']
     paths:
       - revisions.lock
       - revisions-debug.lock
@@ -51,7 +58,7 @@ on:
       - .github/actions/setup-tools/action.yml
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 concurrency:
@@ -78,9 +85,10 @@ jobs:
       builder_ref: ${{ steps.keys.outputs.builder_ref }}
       sources_exists: ${{ steps.probe.outputs.sources_exists }}
       builder_exists: ${{ steps.probe.outputs.builder_exists }}
-      # Only a dispatch can turn the second build off; on push `inputs` is
-      # empty and `inputs.run_second_build == false` would be true.
-      second_build: ${{ (github.event_name != 'workflow_dispatch' || inputs.run_second_build) && 'true' || 'false' }}
+      # snapshot always gets the a/b gate; elsewhere only a dispatch asks for it
+      # (on push `inputs` is empty, so test the ref first).
+      second_build: ${{ (github.ref == 'refs/heads/snapshot' || inputs.run_second_build == true) && 'true' || 'false' }}
+      publish: ${{ (github.ref == 'refs/heads/snapshot' || inputs.publish == true) && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-tools
@@ -271,6 +279,9 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The release version is the commit count on this branch.
+          fetch-depth: 0
       - uses: ./.github/actions/setup-tools
         with:
           diffoscope: 'true'
@@ -320,3 +331,36 @@ jobs:
             dist/package-a
             dist/repro-report.txt
           retention-days: 90
+      - name: Release archive
+        # Only from a build that passed the a/b gate: the previous steps fail
+        # the job otherwise, so reaching here with second_build=true means the
+        # two independent compiles were byte-identical.
+        if: needs.keys.outputs.publish == 'true' && needs.keys.outputs.second_build == 'true'
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LOCK_KEY: ${{ needs.keys.outputs.lock_key }}
+        run: |
+          task release PACKAGE_DIR=dist/package-a DIST_DIR=dist/release | tee release.out
+          archive="$(ls dist/release/pico-emulator-linux-*.tar.zst)"
+          version="$(basename "$archive" .tar.zst | sed 's/^pico-emulator-linux-//')"
+          echo "version=$version" | tee -a "$GITHUB_OUTPUT"
+          if gh release view "$version" >/dev/null 2>&1; then
+            echo "release $version already exists; not republishing" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "Reproducible build of the PICO Spatial Emulator Linux host."
+            echo
+            echo "Two independent GitHub-hosted runners compiled this package byte-identically."
+            echo "Install: extract, then \`sudo scripts/install-pico-emulator.sh\` (see README.md inside)."
+            echo
+            echo '```'; cat dist/package-a/SHA256SUMS; echo '```'
+            echo
+            echo "- sources: \`${{ needs.keys.outputs.sources_ref }}\`"
+            echo "- builder: \`${{ needs.keys.outputs.builder_ref }}\`"
+            echo "- lock key: \`$LOCK_KEY\`"
+          } > notes.md
+          gh release create "$version" --target "$GITHUB_SHA" --title "$version" --notes-file notes.md \
+            "$archive" "$archive.sha256"
+          echo "published release $version" | tee -a "$GITHUB_STEP_SUMMARY"

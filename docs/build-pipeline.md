@@ -129,6 +129,23 @@ The lock assertion still holds: it names four projects, all of them synced, and 
 
 `.github/workflows/build.yml` runs on `workflow_dispatch` and on pushes to `main` that touch the lock, manifests, `Containerfile`, `Taskfile.yml` or `scripts/`. It resolves the keys, skips the sources and builder stages when their promotions already exist, compiles **twice on independent runners**, and compares the two packages with `task repro:check` — a cross-machine reproducibility check on every run. `scripts/ci-cleanup.sh` removes the preinstalled toolchains and puts the build cache on the runner's larger disk and container storage on the other, since the compile needs ~55 GB for the source tree and its build output. The dispatch inputs `sources_ref` and `builder_ref` re-run the later stages from a chosen promotion. `.github/workflows/ci.yml` runs `task verify` and `task lock:check` on every push and pull request.
 
+### Branches and releases
+
+| Branch | What `build.yml` does |
+| --- | --- |
+| any branch (`main` included) | one compile leg, package, `SHA256SUMS` — a build, not a proof |
+| `snapshot` (protected) | two compile legs on independent runners; the package job fails unless `task repro:check` finds them byte-identical; only then `task release` assembles the archive and publishes it as a GitHub Release tagged `v0.<N>` |
+
+`N` is the number of commits reachable from the released commit (`git rev-list --count HEAD`), the scheme ANGLE and Chromium use for build numbers: monotonic on a branch, no counter to store. The release archive `pico-emulator-linux-v0.<N>.tar.zst` is self-contained — `linux-pico-package/`, `scripts/install-pico-emulator.sh`, the systemd units, a README, a `RELEASE` provenance file (commit, manifest, epoch, lock key, every project commit) and a `SHA256SUMS` over all of it — and installs with nothing but tar, zstd and a shell:
+
+```bash
+tar --zstd -xf pico-emulator-linux-v0.42.tar.zst
+cd pico-emulator-linux-v0.42 && sha256sum -c --quiet SHA256SUMS
+sudo scripts/install-pico-emulator.sh          # reads /etc/pico-emulator/site.conf if present
+```
+
+`task release PACKAGE_DIR=dist/linux-pico-package` builds the same archive locally. A dispatch of `build.yml` with `run_second_build` and `publish` set does the same on any branch.
+
 Measured on the first runs (2026-08-26, `ubuntu-24.04` runners, one 145 GB volume with ~118 GB free after `task ci:cleanup`): keys 14 s; builder 1 m 43 s including the push; sources 22 m (repo sync ~10 m, tar+zstd ~8.5 m, push 23 s; peak 53 GB); compile 1 h 03 m – 1 h 22 m per leg (archive pull 71 s, unpack 46 s, ninja ~1 h 18 m; peak 85 GB used). With the sources and builder promotions already present a push runs only the two compile legs and the package job. The hosted-runner binaries matched the local isolated-root builds hash for hash — see *Reproducibility status* in `MANIFEST.md`.
 
 ## Tolerated build failure
