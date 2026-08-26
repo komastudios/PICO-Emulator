@@ -8,6 +8,7 @@
 # installed, each differing file gets a section in the report; without it the
 # report lists the differing paths only.
 set -euo pipefail
+export LC_ALL=C
 
 a="${1:?package A}"
 b="${2:?package B}"
