@@ -178,10 +178,14 @@ COPY ${PICOEMULATOR_TAR} /in/picoemulator.tar.zst
 RUN mkdir -p /out && zstd -dc /in/picoemulator.tar.zst | tar -C /out -xf - && \
     test -x /out/picoemulator/emulator
 
+# -------------------------------------------------------------- package ----
+# Indirection so deploy can take the distribution tree from either `build`
+# or `import` (PACKAGE_STAGE); a variable in FROM is reliable, one in
+# COPY --from is not.
+FROM ${PACKAGE_STAGE} AS package
+
 # --------------------------------------------------------------- deploy ----
 FROM base AS deploy
-# Re-declared: a global ARG is not visible inside a stage until it is.
-ARG PACKAGE_STAGE
 
 # The runtime set below was derived from `ldd` over every binary and shared
 # object in a known-good distribution tree, with the bundled lib64, lib64/qt/lib
@@ -213,7 +217,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 ENV PICO_ROOT=/opt/android/PICO
 ENV PACKAGE=${PICO_ROOT}/linux-pico-package
 
-COPY --from=${PACKAGE_STAGE} /out/picoemulator ${PACKAGE}/picoemulator
+COPY --from=package /out/picoemulator ${PACKAGE}/picoemulator
 
 # Repository-owned inputs (README section 5).
 COPY config/avd-api36/Pico_36_Linux.avd/config.ini \
