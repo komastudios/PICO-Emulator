@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  ACTIONLINT_VERSION: 1.7.12
+
 jobs:
   lint:
     name: repository checks
@@ -15,16 +18,20 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Install task
+      - uses: ./.github/actions/setup-tools
+        with:
+          podman: 'false'
+          oras-version: ''
+      - name: Install actionlint
         run: |
-          sudo sh -c "$(curl -fsSL https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
-          task --version
+          curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash \
+            | sudo bash -s -- "$ACTIONLINT_VERSION" /usr/local/bin >/dev/null
+          actionlint --version
       - name: Repository completeness, script syntax, file modes
         run: task verify
       - name: Lock files match the fork branch tips
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: task lock:check
       - name: Workflow syntax
-        run: |
-          curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash \
-            | bash -s -- latest /usr/local/bin >/dev/null
-          actionlint
+        run: actionlint

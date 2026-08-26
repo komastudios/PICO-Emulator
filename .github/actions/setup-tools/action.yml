@@ -1,15 +1,46 @@
 name: setup-tools
-description: Install task, podman, oras, zstd and diffoscope on a hosted runner
+description: Install the build pipeline's tools on a hosted runner, at pinned versions
+inputs:
+  task-version:
+    description: go-task release to install
+    default: v3.53.1
+  oras-version:
+    description: oras release to install (empty to skip)
+    default: 1.2.2
+  podman:
+    description: Install podman (needed by every stage that builds an image)
+    default: 'true'
+  diffoscope:
+    description: Install diffoscope (needed by task repro:check)
+    default: 'false'
 runs:
   using: composite
   steps:
     - shell: bash
+      env:
+        TASK_VERSION: ${{ inputs.task-version }}
+        ORAS_VERSION: ${{ inputs.oras-version }}
+        WANT_PODMAN: ${{ inputs.podman }}
+        WANT_DIFFOSCOPE: ${{ inputs.diffoscope }}
       run: |
         set -euo pipefail
-        sudo sh -c "$(curl -fsSL https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
+        # Versions are pinned: the pipeline's determinism claims are about the
+        # build, but a tool that changes under it can still break a stage
+        # mid-run. zstd comes from the runner image and decompresses the
+        # archive only; the archive's identity is the sha256 of the
+        # uncompressed stream, so its version does not matter.
+        sudo sh -c "$(curl -fsSL https://taskfile.dev/install.sh)" -- \
+          -d -b /usr/local/bin "$TASK_VERSION"
+        pkgs=(zstd)
+        [ "$WANT_PODMAN" = true ] && pkgs+=(podman)
+        [ "$WANT_DIFFOSCOPE" = true ] && pkgs+=(diffoscope-minimal)
         sudo apt-get update -qq
-        sudo apt-get install -y -qq --no-install-recommends podman zstd diffoscope-minimal >/dev/null
-        v="${ORAS_VERSION:-1.2.2}"
-        curl -fsSL "https://github.com/oras-project/oras/releases/download/v${v}/oras_${v}_linux_amd64.tar.gz" \
-          | sudo tar -xz -C /usr/local/bin oras
-        task --version; podman --version; oras version | head -1
+        sudo apt-get install -y -qq --no-install-recommends "${pkgs[@]}" >/dev/null
+        if [ -n "$ORAS_VERSION" ]; then
+          curl -fsSL "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin oras
+          oras version | head -1
+        fi
+        task --version
+        [ "$WANT_PODMAN" = true ] && podman --version
+        exit 0
