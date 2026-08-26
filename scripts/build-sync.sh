@@ -9,8 +9,11 @@
 #   LOCK_KEY      optional: recorded in the tree as .pico-lock-key
 #   SYNC_DEPTH    optional: shallow history depth for every project (e.g. 1)
 #   SYNC_PARTIAL  optional: 1 = partial clone (blob:none) to shrink .repo
+#   SYNC_GROUPS   optional: repo manifest groups to sync (default: the Linux set)
+#   EXCLUDE_FILE  optional: projects to remove from the manifest before syncing
 set -euo pipefail
-. "$(dirname "$0")/lib/build-env.sh"
+here="$(cd "$(dirname "$0")" && pwd)"
+. "$here/lib/build-env.sh"
 
 : "${MANIFEST_URL:?}"
 : "${MANIFEST_BRANCH:?}"
@@ -38,23 +41,57 @@ if [ "${SYNC_PARTIAL:-0}" = 1 ]; then
   printf 'Partial clone: blob:none\n'
 fi
 
+# The manifest groups the other-host prebuilts as notdefault,platform-darwin /
+# platform-windows and the Linux ones as notdefault,platform-linux, so this
+# selection fetches exactly the hosts the build targets. Everything it leaves
+# out is also dropped by scripts/source-trim.txt, so the archive is the same
+# tree either way; not downloading it is what makes the sync fit a runner.
+sync_groups="${SYNC_GROUPS:-default,platform-linux}"
+printf 'Manifest groups: %s\n' "$sync_groups"
+
 cd "$src"
-repo init -g all \
+repo init -g "$sync_groups" \
   -u "$MANIFEST_URL" \
   -b "$manifest_rev" \
   -m "$MANIFEST_FILE" \
   --no-clone-bundle "${init_opts[@]}"
 
-rm -f .repo/local_manifests/pins.xml
+mkdir -p .repo/local_manifests
+rm -f .repo/local_manifests/pins.xml .repo/local_manifests/exclude.xml
 if [ -n "${PINS_FILE:-}" ]; then
   [ -f "$PINS_FILE" ] || { printf 'Build failed: PINS_FILE %s not found.\n' "$PINS_FILE" >&2; exit 1; }
-  mkdir -p .repo/local_manifests
   cp "$PINS_FILE" .repo/local_manifests/pins.xml
   printf 'Applied project pins from %s\n' "$PINS_FILE"
 fi
 
+# Projects with no manifest group that the trim drops anyway; removing them
+# here keeps them off the disk entirely. Recorded as name/path pairs so the
+# directory each one would have left behind can be recreated below.
+exclude_file="${EXCLUDE_FILE:-$here/source-exclude.txt}"
+excluded_paths=()
+if [ -f "$exclude_file" ]; then
+  {
+    printf '<?xml version="1.0" encoding="UTF-8"?>\n<manifest>\n'
+    while read -r name path; do
+      case "$name" in ''|'#'*) continue ;; esac
+      [ -n "$path" ] || { printf 'Build failed: %s: no path for %s\n' "$exclude_file" "$name" >&2; exit 1; }
+      printf '  <remove-project name="%s" />\n' "$name"
+      excluded_paths+=("$path")
+    done < "$exclude_file"
+    printf '</manifest>\n'
+  } > .repo/local_manifests/exclude.xml
+  printf 'Excluded %s projects from the manifest (%s)\n' "${#excluded_paths[@]}" "$exclude_file"
+fi
+
 repo sync -c -d -j"$JOBS" --force-sync --no-clone-bundle
 repo forall -c 'git lfs pull'
+
+# An excluded project leaves no directory behind, but the trim, which only
+# deletes the project itself, leaves its parent. Recreate that parent so the
+# archive is byte-for-byte what a full sync followed by the trim produces.
+for path in ${excluded_paths+"${excluded_paths[@]}"}; do
+  mkdir -p "$(dirname "$path")"
+done
 
 # The manifest pins both forks to explicit commits; prove we got them, and
 # record every project HEAD so the compile stage can report them even after

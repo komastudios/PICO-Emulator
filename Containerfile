@@ -86,7 +86,8 @@ ARG SYNC_PARTIAL=0
 ARG ZSTD_LEVEL=12
 ENV TZ=UTC LC_ALL=C LANG=C.UTF-8
 COPY scripts/container-build.sh scripts/build-sync.sh scripts/build-trim.sh \
-     scripts/source-trim.txt scripts/source-required.txt /opt/pico/scripts/
+     scripts/source-trim.txt scripts/source-required.txt scripts/source-exclude.txt \
+     /opt/pico/scripts/
 COPY scripts/lib/build-env.sh /opt/pico/scripts/lib/build-env.sh
 COPY manifests /opt/pico/manifests
 COPY revisions.lock revisions-debug.lock /opt/pico/

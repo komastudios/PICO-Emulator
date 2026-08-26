@@ -1,0 +1,21 @@
+# Projects removed from the manifest before `repo sync` runs, so they are never
+# downloaded. One "<manifest project name> <path>" pair per line; blank lines
+# and comments are ignored.
+#
+# Every path here is also dropped by scripts/source-trim.txt, so the archive is
+# unchanged — the point is the peak: a GitHub-hosted runner has ~66 GB on its
+# largest filesystem and the full checkout is ~116 GB (working tree plus
+# .repo objects). These two projects alone account for ~46 GB of that.
+#
+# Projects the manifest marks `notdefault,platform-darwin` or
+# `notdefault,platform-windows` are excluded by SYNC_GROUPS instead; these two
+# carry no group, so they have to be named.
+#
+# This file is an input to the source archive's key (task lock:key).
+
+# guest images, unused by the host build (CTest is disabled) — 21 GB checkout,
+# 20 GB of git objects
+platform/prebuilts/android-emulator-build/system-images  prebuilts/android-emulator-build/system-images
+
+# the Studio JDK, used by the Gradle-based tools this build never invokes
+platform/prebuilts/studio/jdk                            prebuilts/studio/jdk
