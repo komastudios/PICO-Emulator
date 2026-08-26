@@ -63,7 +63,11 @@ cp -p "$repo_dir/docs/host-install.md" "$root/README.md"
   fi
 } > "$root/RELEASE"
 
-(cd "$root" && find . -type f ! -name SHA256SUMS | sort | sed 's|^\./||' | xargs sha256sum > SHA256SUMS)
+# Every shipped file, symlinks included (hashed through to their target), and
+# only this manifest itself excluded — -name would also have skipped the
+# package's own SHA256SUMS one level down and left it unattested.
+(cd "$root" && find . \( -type f -o -type l \) ! -path ./SHA256SUMS -printf '%P\0' \
+   | sort -z | xargs -0 sha256sum > SHA256SUMS)
 
 mkdir -p "$out"
 archive="$out/$name.tar.zst"

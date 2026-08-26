@@ -57,8 +57,10 @@ on:
       - .github/workflows/build.yml
       - .github/actions/setup-tools/action.yml
 
+# contents stays read for the whole workflow; only the job that cuts a release
+# gets write, so a compromised build stage cannot push to the repository.
 permissions:
-  contents: write
+  contents: read
   packages: write
 
 concurrency:
@@ -271,6 +273,9 @@ jobs:
   package:
     name: package and verify
     needs: [keys, compile]
+    permissions:
+      contents: write
+      packages: write
     # always() is load-bearing: a skip propagates down the whole dependency
     # graph, so when builder and sources are skipped as already promoted this
     # job is skipped too unless it opts out, even though compile succeeded.
