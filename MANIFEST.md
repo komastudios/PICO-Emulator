@@ -93,6 +93,8 @@ The lavapipe hash is unchanged — it is the distribution's own Mesa build, copi
 
 A build from the trimmed source archive of the staged pipeline (`task sources` → `task compile`) reproduced the untrimmed build file for file, so the trim rules do not affect the output; a further build from that archive in another fresh root produced the same hashes again.
 
+**Reproduced on GitHub-hosted runners the same day.** `.github/workflows/build.yml` (runs 32918815809 and 32926173846) built the source archive on a runner — its file listing matched the local archive file for file — and compiled it on two independent `ubuntu-latest` runners per run (4 vCPU, ninja at nproc, against 16–32 here). All three hosted-runner compiles produced the same package archive (content sha256 `275d0af4…`), `task repro:check` between the two legs reported 401 of 401 files identical, and the extracted `SHA256SUMS` equals the four hashes above. Against the local package the only differing file is `picoemulator/.pico-provenance` (the runner syncs 65 projects instead of 76 because other-host prebuilts are excluded up front); every compiled, prebuilt and copied file is identical.
+
 The sources of nondeterminism that had to be removed, each found by comparing two clean-room builds with `diffoscope`:
 
 | Cause | Effect | Fix |
