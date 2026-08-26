@@ -180,6 +180,8 @@ RUN mkdir -p /out && zstd -dc /in/picoemulator.tar.zst | tar -C /out -xf - && \
 
 # --------------------------------------------------------------- deploy ----
 FROM base AS deploy
+# Re-declared: a global ARG is not visible inside a stage until it is.
+ARG PACKAGE_STAGE
 
 # The runtime set below was derived from `ldd` over every binary and shared
 # object in a known-good distribution tree, with the bundled lib64, lib64/qt/lib
