@@ -100,6 +100,10 @@ task repro:check A=/path/a/dist/linux-pico-package B=/path/b/dist/linux-pico-pac
 
 which lists every differing file and, when `diffoscope` is installed, explains each difference in `dist/repro-report.txt`.
 
+## What the promoted artifacts contain
+
+Nothing proprietary is ever promoted. The source archive holds only what `repo sync` fetched from the manifest's three public remotes (`github.com/Pico-Developer`, `github.com/komastudios`, `android-review.googlesource.com`), and the trim removes the vendor guest images that ship in `PICO-Emulator-common`. The package archive holds the build output plus files copied verbatim from those same public sources: the ANGLE and netsim prebuilts and `emulatorParams.ini` from `PICO-Emulator-common`/`PICO-Emulator-qemu`, AOSP's `android-info.txt`/`LICENSE`, and the flatbuffers headers. Audited file by file on 2026-08-26 by hashing every non-compiled file in a package against the synced tree. The guest image, the AVD data and anything extracted from the vendor's Windows/macOS packages are mounted at runtime only, and `scripts/build-package.sh` fails the package stage if a file matching their signatures (`*.img`, `system-images`, `kernel-ranchu`, `ramdisk*`, `*swan*`, `*oversea*`, …) appears in the tree.
+
 ## Stages and promotion
 
 `task build` does everything in one image build, which needs a machine that can hold the ~157 GB of checkout and objects. The same stages also run one at a time, each promoting a content-addressed artifact the next one starts from — this is what `.github/workflows/build.yml` does on GitHub-hosted runners, and every stage can be run locally:

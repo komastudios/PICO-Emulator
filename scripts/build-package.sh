@@ -13,6 +13,19 @@ set -euo pipefail
 : "${SOURCE_DATE_EPOCH:?package needs SOURCE_DATE_EPOCH for deterministic mtimes}"
 [ -d "$out/picoemulator" ] || { printf 'Build failed: %s/picoemulator missing; run the compile stage.\n' "$out" >&2; exit 1; }
 
+# Guard: the package must contain only what the public sources produce. The
+# proprietary guest image and anything from the vendor's Windows/macOS
+# packages are mounted at runtime, never shipped, so their signatures are a
+# hard failure here rather than a surprise on the registry.
+bad="$(cd "$out" && find picoemulator \( -iname '*.img' -o -iname '*.zip' -o -iname '*.apk' \
+  -o -iname '*swan*' -o -iname '*oversea*' -o -iname '*win64*' -o -iname 'system-images' \
+  -o -iname 'kernel-ranchu' -o -iname 'ramdisk*' -o -iname 'vbmeta*' -o -iname 'super*.img' \) -print)"
+if [ -n "$bad" ]; then
+  printf 'Build failed: the package contains vendor-image content:\n%s\n' "$bad" >&2
+  exit 1
+fi
+printf 'Package content guard passed.\n'
+
 name="picoemulator${lock_key:+-$lock_key}"
 cd "$out"
 tar --format=posix --sort=name --numeric-owner --owner=0 --group=0 \
