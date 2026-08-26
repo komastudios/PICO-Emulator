@@ -55,7 +55,13 @@ def commit_epoch(manifest_url, rev):
     if not m:
         sys.exit(f"error: only GitHub manifest URLs are supported, got {manifest_url}")
     api = f"https://api.github.com/repos/{m.group(1)}/{m.group(2)}/commits/{rev}"
-    req = urllib.request.Request(api, headers={"Accept": "application/vnd.github+json"})
+    headers = {"Accept": "application/vnd.github+json"}
+    # Unauthenticated calls are rate limited per IP, which a shared CI runner
+    # can exhaust; GITHUB_TOKEN raises the limit and is otherwise unused here.
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(api, headers=headers)
     with urllib.request.urlopen(req, timeout=30) as r:
         data = json.load(r)
     stamp = data["commit"]["committer"]["date"]          # e.g. 2026-08-25T14:19:12Z
