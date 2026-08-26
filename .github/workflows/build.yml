@@ -298,7 +298,12 @@ jobs:
         run: |
           {
             echo "## Build ${{ needs.keys.outputs.lock_key }}"
-            echo; echo '```'; cat dist/package-a/SHA256SUMS; echo '```'
+            echo
+            if [ -f dist/package-a/SHA256SUMS ]; then
+              echo '```'; cat dist/package-a/SHA256SUMS; echo '```'
+            else
+              echo '(the package stage produced no SHA256SUMS)'
+            fi
             echo; echo "- sources: \`${{ needs.keys.outputs.sources_ref }}\`"
             echo "- builder: \`${{ needs.keys.outputs.builder_ref }}\`"
             echo "- second build compared: ${{ needs.keys.outputs.second_build }}"
