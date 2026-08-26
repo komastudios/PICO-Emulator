@@ -62,6 +62,8 @@ vars:
   # by default, or a pulled image reference (BUILDER_IMAGE=ghcr.io/...@sha256:...).
   BUILDER_IMAGE: '{{.BUILDER_IMAGE | default "builder"}}'
   SOURCE_ARCHIVE: '{{.SOURCE_ARCHIVE | default (printf "%s/sources-%s.tar.zst" .CACHE_DIR .LOCK_KEY)}}'
+  # 1 frees the source archive once the compile stage has unpacked it.
+  DISCARD_SOURCE_ARCHIVE: '{{.DISCARD_SOURCE_ARCHIVE | default "0"}}'
   SYNC_DEPTH: '{{.SYNC_DEPTH | default ""}}'
   SYNC_PARTIAL: '{{.SYNC_PARTIAL | default "0"}}'
   ZSTD_LEVEL: '{{.ZSTD_LEVEL | default "12"}}'
@@ -251,6 +253,7 @@ tasks:
         --build-arg SOURCE_DATE_EPOCH={{.SOURCE_DATE_EPOCH}}
         --build-arg COMPILER_CACHE={{.COMPILER_CACHE}}
         --build-arg SOURCE_ARCHIVE=/cache/{{base .SOURCE_ARCHIVE}}
+        --build-arg DISCARD_SOURCE_ARCHIVE={{.DISCARD_SOURCE_ARCHIVE}}
         --build-arg LOCK_KEY={{.LOCK_KEY}}
         --build-arg JOBS={{.JOBS}}
         --build-arg CACHE_BUST={{.CACHE_BUST}}

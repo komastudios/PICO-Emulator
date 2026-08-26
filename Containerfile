@@ -134,6 +134,10 @@ ARG COMPILER_CACHE=none
 # stage) replaces the sync; LOCK_KEY must match the key recorded in it.
 ARG SOURCE_ARCHIVE=
 ARG LOCK_KEY=
+# 1 deletes SOURCE_ARCHIVE once it is unpacked. The build writes ~37 GB of
+# objects next to the 18 GB tree, which on a hosted runner leaves no room for
+# the 5 GB archive as well.
+ARG DISCARD_SOURCE_ARCHIVE=0
 ENV TZ=UTC LC_ALL=C LANG=C.UTF-8
 
 COPY scripts/container-build.sh scripts/build-sync.sh scripts/build-compile.sh \
@@ -156,6 +160,7 @@ RUN MANIFEST_URL="${MANIFEST_URL}" \
     SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" \
     COMPILER_CACHE="${COMPILER_CACHE}" \
     SOURCE_ARCHIVE="${SOURCE_ARCHIVE}" \
+    DISCARD_SOURCE_ARCHIVE="${DISCARD_SOURCE_ARCHIVE}" \
     LOCK_KEY="${LOCK_KEY}" \
     JOBS="${JOBS}" \
     CACHE_BUST="${CACHE_BUST}" \

@@ -6,6 +6,7 @@
 #   JOBS
 #   SOURCE_ARCHIVE    optional: a promoted source archive (from the trim stage)
 #                     to unpack into $src instead of using a synced tree
+#   DISCARD_SOURCE_ARCHIVE  optional: 1 = delete SOURCE_ARCHIVE once unpacked
 #   LOCK_KEY          optional: must match the key recorded in the tree
 #   SOURCE_DATE_EPOCH optional: fixed build timestamp, from the locked commit
 #   COMPILER_CACHE    "none" (default), "auto", or a path to sccache/ccache
@@ -26,6 +27,12 @@ if [ -n "${SOURCE_ARCHIVE:-}" ]; then
     if [ -n "$lock_key" ] && [ "$have" != "$lock_key" ]; then
       printf 'Build failed: archive was made for key %s, expected %s.\n' "${have:-none}" "$lock_key" >&2
       exit 1
+    fi
+    # The build writes ~37 GB of objects next to the 18 GB source tree, which
+    # on a hosted runner leaves no room for the archive it came from.
+    if [ "${DISCARD_SOURCE_ARCHIVE:-0}" = 1 ]; then
+      rm -f "$SOURCE_ARCHIVE"
+      printf 'Removed %s; the unpacked tree is the input from here on.\n' "$SOURCE_ARCHIVE"
     fi
   fi
 fi
