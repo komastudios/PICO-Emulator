@@ -5,7 +5,7 @@ This file separates repository-owned configuration from proprietary/large inputs
 ## Source revisions
 
 - Manifest (original): `https://github.com/Pico-Developer/PICO-Emulator-manifest.git`, `pico/emu-35-rom.xml`
-- Manifest (forked, current): `https://github.com/komastudios/PICO-Emulator-manifest.git`, branch `pico-linux`, `pico/emu-35-rom.xml` (or `pico/emu-35-rom-debug.xml`), tip `7b3fe07`, recorded in `revisions.lock`
+- Manifest (forked, current): `https://github.com/komastudios/PICO-Emulator-manifest.git`, branch `pico-linux`, `pico/emu-35-rom.xml` (or `pico/emu-35-rom-debug.xml`), tip `083e09a`, recorded in `revisions.lock`
 - PICO qemu base: `8ca9387f0822db1cb0dfc8ba724db212084bb2df`
 - PICO gfxstream base: `17b28f4e8c38b1aaadb620072786a0cbeba7362b`
 - Experimental upstream SwiftShader base: `6b8d31709ad185dbd64e80865e830a9dbe8e7559` (not deployed)
@@ -15,7 +15,7 @@ The modifications on top of those bases are maintained as fork branches on the `
 
 | Component | Fork branch | Tip | Reproduces the deployed binary |
 | --- | --- | --- | --- |
-| qemu | `komastudios/PICO-Emulator-qemu` @ `pico-linux` | `b461fb8c` | Source of the deployed binary |
+| qemu | `komastudios/PICO-Emulator-qemu` @ `pico-linux` | `27ee429e` | Source of the deployed binary |
 | gfxstream | `komastudios/PICO-Emulator-gfxstream` @ `pico-linux` | `c7cdba8b` | Source of the deployed binary |
 | gfxstream | `komastudios/PICO-Emulator-gfxstream` @ `pico-linux-debug` | `c4af3b55` | Not deployed — instrumentation variant |
 | SwiftShader | `komastudios/swiftshader` @ `pico-linux` | `20fc43c1` | Not deployed |
@@ -82,28 +82,29 @@ The lavapipe hash is unchanged — it is the distribution's own Mesa build, copi
 
 ### Reproducibility status
 
-**These hashes are a record, not an acceptance test.** Accept a container build with the functional checks in the clean-room checklist, not hash equality.
+**Measured byte-for-byte reproducible on 2026-08-26.** Two from-scratch builds of lock `083e09a` (qemu `27ee429e`, gfxstream `c7cdba8b`, `SOURCE_DATE_EPOCH=1787701772`) in separate cache roots, compiler cache disabled, produced 401 identical files out of 401 (`task repro:check`). The four hashed binaries of that build:
 
-Rebuilding from the same locked revisions on the same host does **not** reproduce them. Measured on 2026-08-25, comparing the deployed `libgfxstream_backend.so` (`d86f2233…`) against a fresh `task build` from the same lock (`a520b675…`):
-
-| Observation | Result |
+| Relative path under `picoemulator/` | SHA-256 |
 | --- | --- |
-| Differing bytes | 111,972 of ~150 MB (≈0.07%) |
-| ELF sections | `.text` and `.rodata` differ; `.data` and `.comment` identical |
-| Build ID | differs (`--build-id=sha1`, so it follows the content rather than causing the difference) |
-| Relinking the same objects, twice | byte-identical — the link step is deterministic |
-| Distribution copy vs extracted artifact | byte-identical — `task extract` is faithful |
+| `emulator` | `40ec95b516a056230e8134ec5489f0522000c9f1642c3538de1f57d4dc087977` |
+| `qemu/linux-x86_64/qemu-system-x86_64` | `41436e1337a77811f2bc0e04e138f1e3424207c89a176c30a17a0afcbe2667e8` |
+| `lib64/libgfxstream_backend.so` | `05e530ea99328d6c56251457510ea2c58f8c538f94ae241f09dad054e9d04754` |
+| `lib64/vulkan/libvulkan_lvp.so` | `0004262f4dc95585492d55925face67a79a7c869ad8760b42ae01bd0bdb807a2` |
 
-So the divergence is in compilation, not in linking, packaging or embedded build metadata — the timestamped build ID alone does not explain it, because it does not reach `.text`. The cause is **not yet attributed**: the rebuild overwrote the shared build cache, destroying the earlier object files, and only the deployed binary survives. Candidates are a dirty tree at the time of the earlier build, a toolchain difference from the then-unpinned base image tag, or path/ordering effects reaching `.rodata`.
+A build from the trimmed source archive of the staged pipeline (`task sources` → `task compile`) reproduced the untrimmed build file for file, so the trim rules do not affect the output.
 
-Controls now in place, from the reproducible-builds practice notes:
+The sources of nondeterminism that had to be removed, each found by comparing two clean-room builds with `diffoscope`:
 
-- the base image is pinned by **digest**, not by the mutable `debian:13-slim` tag;
-- `SOURCE_DATE_EPOCH` is recorded in `revisions.lock`, derived from the locked manifest commit's own timestamp, and exported into the build;
-- the build runs with `TZ=UTC`, `LC_ALL=C` and `umask 022`;
-- `repo` syncs the manifest at a **commit** with project pins, and the build fails if the checkout does not match the lock.
+| Cause | Effect | Fix |
+| --- | --- | --- |
+| `cmake.py` derived the SDK build number from the wall clock (`%y%m%d%H%M`) | ten digits in the merged `.rodata` string pool shifted every constant after them; `.text`/`.rodata` differed across ~0.09% of every binary | qemu `28104445`: derive it from `SOURCE_DATE_EPOCH` |
+| `android/android-emu/obfuscator.cmake` generated a `string(RANDOM)` XOR key at configure time, compiled into `main-common.c` | a different 16-byte key in every `qemu-system-*` | qemu `fe8473f9`: seed the generator from `SOURCE_DATE_EPOCH` |
+| `licensing.py` iterated Python sets | `NOTICE.txt`/`NOTICE.csv` in hash-seed order | qemu `fe8473f9`: sort; `PYTHONHASHSEED=0` in the build environment |
+| Qt AUTOMOC ran moc and uic in parallel; headers include the `ui_*.h` uic generates in the same target | moc sometimes scanned the header before `ui_*.h` existed and emitted a different `moc_*.cpp` (an extra `#include`), shifting debug line numbers and the build-id of every Qt-linked binary | qemu `27ee429e`: `CMAKE_AUTOGEN_PARALLEL 1` |
+| the bundled sccache 0.3.0 fronted every compile (`RULE_LAUNCH_COMPILE`) | a cache hit replays a stored object and can mask a difference; it also failed builds when its server was slow to start | `COMPILER_CACHE=none` by default |
+| mutable `debian:13-slim` tag; unset `SOURCE_DATE_EPOCH`, `TZ`, `LC_ALL`, umask | toolchain and metadata drift | digest-pinned base image; epoch recorded in the lock; fixed environment in `scripts/lib/build-env.sh` |
 
-Still outstanding: a two-clean-room double build, in **separate** cache roots and with any compiler cache disabled, compared with `diffoscope`. Until that runs, treat byte-reproducibility as unverified rather than as either achieved or impossible.
+Earlier hashes in this file (the hand-built deployment and the 2026-08-25 container build) predate these fixes and are not expected to be reproduced by a build from the current lock. Rebuilding the lock (`task lock`) changes `SOURCE_DATE_EPOCH` and therefore the SDK build number and the obfuscation key, so the hashes above belong to lock `083e09a` specifically.
 
 ### Verified after installation
 
