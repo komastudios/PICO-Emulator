@@ -38,7 +38,7 @@ on:
         type: boolean
         default: false
       publish:
-        description: Publish a release when the two builds agree (always on for snapshot)
+        description: Publish a release when the two builds agree (snapshot branch only)
         type: boolean
         default: false
       sync_depth:
@@ -340,13 +340,15 @@ jobs:
         # Only from a build that passed the a/b gate: the previous steps fail
         # the job otherwise, so reaching here with second_build=true means the
         # two independent compiles were byte-identical.
-        if: needs.keys.outputs.publish == 'true' && needs.keys.outputs.second_build == 'true'
+        # Releases are cut from snapshot only; v0.<N> counts commits on the
+        # branch, so two branches could otherwise claim the same version.
+        if: github.ref == 'refs/heads/snapshot' && needs.keys.outputs.publish == 'true' && needs.keys.outputs.second_build == 'true'
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
           LOCK_KEY: ${{ needs.keys.outputs.lock_key }}
         run: |
-          task release PACKAGE_DIR=dist/package-a DIST_DIR=dist/release | tee release.out
+          task release PACKAGE_DIR=dist/package-a DIST_DIR=dist/release
           archive="$(ls dist/release/pico-emulator-linux-*.tar.zst)"
           version="$(basename "$archive" .tar.zst | sed 's/^pico-emulator-linux-//')"
           echo "version=$version" | tee -a "$GITHUB_OUTPUT"
