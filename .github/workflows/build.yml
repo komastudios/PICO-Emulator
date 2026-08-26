@@ -233,7 +233,7 @@ jobs:
           task compile \
             CACHE_DIR="$CACHE_DIR" \
             PODMAN_FLAGS="--root $GRAPHROOT" \
-            BUILDER_IMAGE="$BUILDER_DIGEST" JOBS=4 COMPILER_CACHE=none \
+            BUILDER_IMAGE="$BUILDER_DIGEST" COMPILER_CACHE=none \
             DISCARD_SOURCE_ARCHIVE=1 \
             CACHE_BUST='${{ github.run_id }}-${{ matrix.run }}' \
             2>&1 | tee build-${{ matrix.run }}.log

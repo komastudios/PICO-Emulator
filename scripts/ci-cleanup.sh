@@ -53,6 +53,6 @@ if [ "${cache_free:-0}" -lt "$min_free" ]; then
 fi
 cache="${cache_mount%/}/pico-cache"; graph="${graph_mount%/}/pico-containers"
 sudo mkdir -p "$cache" "$graph"; sudo chown "$(id -u):$(id -g)" "$cache"
-printf 'cache on %s (%s GB free), container storage on %s (%s GB free)\n' \
-  "$cache_mount" "$cache_free" "$graph_mount" "${graph_free:-$cache_free}" >&2
+printf 'cache on %s (%s GB free), container storage on %s (%s GB free), %s cpus\n' \
+  "$cache_mount" "$cache_free" "$graph_mount" "${graph_free:-$cache_free}" "$(nproc)" >&2
 printf 'CACHE_DIR=%s\nGRAPHROOT=%s\n' "$cache" "$graph"
