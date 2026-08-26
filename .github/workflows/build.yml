@@ -45,8 +45,18 @@ on:
         description: repo init --depth for the sources stage (empty = full history)
         type: string
         default: '1'
+  # Any push to snapshot builds (see snapshot.yml, which calls this workflow);
+  # elsewhere only a push that touches the build inputs does.
+  workflow_call:
+    inputs:
+      publish:
+        type: boolean
+        default: false
+      run_second_build:
+        type: boolean
+        default: false
   push:
-    branches: ['**']
+    branches-ignore: [snapshot]
     paths:
       - revisions.lock
       - revisions-debug.lock

@@ -1,0 +1,20 @@
+# Every push to the protected snapshot branch runs the full a/b-gated build
+# and, when the two compiles agree, publishes a release. Kept separate so the
+# paths filter of build.yml's push trigger cannot skip it.
+name: snapshot
+
+on:
+  push:
+    branches: [snapshot]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      run_second_build: true
+      publish: true
+    secrets: inherit
