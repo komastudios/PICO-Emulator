@@ -14,6 +14,13 @@
 #   --prefix DIR     Install root. Default: /opt/android/PICO
 #   --state DIR      Mutable state root. Default: /var/lib/android
 #   --user NAME      Service user. Default: android
+#   --group NAME     Extra supplementary group for the emulator service, e.g.
+#                    a site group that owns the install root. Repeatable.
+#                    The group must already exist; it is never created.
+#   --config FILE    Site configuration to source before the options above.
+#                    Default: /etc/pico-emulator/site.conf when it exists.
+#                    Keys: PICO_GROUPS ("g1 g2"), PICO_PREFIX, PICO_STATE_DIR,
+#                    PICO_USER, PICO_SOURCE.
 #   --restart        Restart the emulator when the install changed something.
 #   --no-restart     Never restart; print the commands instead.
 #   --dry-run        Show what would change and exit without touching anything.
@@ -37,6 +44,8 @@ PREFIX=/opt/android/PICO
 STATE_DIR=/var/lib/android
 SVC_USER=android
 SVC_GROUP=android
+EXTRA_GROUPS=()
+CONFIG_FILE=""
 RESTART_MODE=ask
 DRY_RUN=0
 SKIP_UNITS=0
@@ -50,10 +59,29 @@ info() { printf '  %s\n' "$*"; }
 step() { printf '\n== %s\n' "$*"; }
 run()  { if [ "$DRY_RUN" -eq 1 ]; then printf '  would run: %s\n' "$*"; else "$@"; fi; }
 
-usage() { sed -n '2,35p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+usage() { sed -n '2,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+
+# Site configuration first, so command-line options override it.
+for ((i = 1; i <= $#; i++)); do
+  if [ "${!i}" = "--config" ]; then j=$((i + 1)); CONFIG_FILE="${!j:-}"; fi
+done
+[ -n "$CONFIG_FILE" ] || { [ -f /etc/pico-emulator/site.conf ] && CONFIG_FILE=/etc/pico-emulator/site.conf; } || true
+if [ -n "$CONFIG_FILE" ]; then
+  [ -f "$CONFIG_FILE" ] || die "config file not found: $CONFIG_FILE"
+  # shellcheck disable=SC1090
+  . "$CONFIG_FILE"
+  [ -n "${PICO_PREFIX:-}" ]    && PREFIX="$PICO_PREFIX"
+  [ -n "${PICO_STATE_DIR:-}" ] && STATE_DIR="$PICO_STATE_DIR"
+  [ -n "${PICO_USER:-}" ]      && { SVC_USER="$PICO_USER"; SVC_GROUP="$PICO_USER"; }
+  [ -n "${PICO_SOURCE:-}" ]    && SOURCE_DIR="$PICO_SOURCE"
+  # shellcheck disable=SC2206
+  [ -n "${PICO_GROUPS:-}" ]    && EXTRA_GROUPS=(${PICO_GROUPS})
+fi
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --config)     shift 2 ;;
+    --group)      EXTRA_GROUPS+=("${2:?--group needs a name}"); shift 2 ;;
     --source)     SOURCE_DIR="${2:?--source needs a directory}"; shift 2 ;;
     --prefix)     PREFIX="${2:?--prefix needs a directory}"; shift 2 ;;
     --state)      STATE_DIR="${2:?--state needs a directory}"; shift 2 ;;
@@ -69,7 +97,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$SOURCE_DIR" ] || SOURCE_DIR="$repo_dir/dist/linux-pico-package"
+# A repository checkout keeps the package under dist/; a release archive
+# ships it next to scripts/.
+if [ -z "$SOURCE_DIR" ]; then
+  if [ -d "$repo_dir/dist/linux-pico-package" ]; then SOURCE_DIR="$repo_dir/dist/linux-pico-package"
+  else SOURCE_DIR="$repo_dir/linux-pico-package"; fi
+fi
 PACKAGE="$PREFIX/linux-pico-package"
 UNIT_DIR=/etc/systemd/system
 UNITS="pico-display.service android-adb.service pico-emulator.service"
@@ -85,7 +118,7 @@ warn() { warnings+=("$1"); printf '  warning: %s\n' "$1" >&2; }
 step "Preflight"
 [ "$DRY_RUN" -eq 1 ] || [ "$(id -u)" -eq 0 ] || die "must run as root (use sudo), or pass --dry-run"
 command -v rsync >/dev/null || die "rsync is required"
-[ -d "$SOURCE_DIR" ] || die "package not found: $SOURCE_DIR (run 'make' first)"
+[ -d "$SOURCE_DIR" ] || die "package not found: $SOURCE_DIR (run 'task build' first, or pass --source)"
 [ -x "$SOURCE_DIR/picoemulator/emulator" ] || die "not a PICO package: $SOURCE_DIR/picoemulator/emulator is missing"
 for f in start-pico-linux.sh wait-pico-display.sh wait-pico-boot.sh; do
   [ -f "$SOURCE_DIR/$f" ] || die "package is incomplete: $f is missing"
@@ -93,6 +126,8 @@ done
 info "source:  $SOURCE_DIR"
 info "prefix:  $PREFIX"
 info "state:   $STATE_DIR"
+[ -n "$CONFIG_FILE" ] && info "config:  $CONFIG_FILE"
+[ "${#EXTRA_GROUPS[@]}" -gt 0 ] && info "groups:  kvm ${EXTRA_GROUPS[*]}"
 if [ -f "$SOURCE_DIR/.build-variant" ]; then
   variant="$(cat "$SOURCE_DIR/.build-variant")"
   info "variant: $variant"
@@ -108,13 +143,6 @@ fi
 
 # ------------------------------------------------------------ user & groups --
 step "Service user and groups"
-if getent group sitegroup >/dev/null; then
-  info "group sitegroup already exists"
-else
-  run groupadd --system sitegroup
-  info "created group sitegroup"
-fi
-
 if id -u "$SVC_USER" >/dev/null 2>&1; then
   info "user $SVC_USER already exists (uid $(id -u "$SVC_USER")); leaving its account definition untouched"
   current_home="$(getent passwd "$SVC_USER" | cut -d: -f6)"
@@ -126,8 +154,10 @@ else
   info "created system user $SVC_USER"
 fi
 
-# usermod -aG is additive and a no-op when membership already exists.
-for g in kvm sitegroup; do
+# usermod -aG is additive and a no-op when membership already exists. Extra
+# groups come from the site configuration (--group / PICO_GROUPS); they are
+# never created here, since what they grant access to is the site's business.
+for g in kvm "${EXTRA_GROUPS[@]+"${EXTRA_GROUPS[@]}"}"; do
   if ! getent group "$g" >/dev/null; then
     warn "group $g does not exist; skipping membership"
     continue
@@ -302,6 +332,25 @@ else
       info "installed: $u"
     fi
   done
+  # Site-specific supplementary groups go into a drop-in this installer owns,
+  # so the shipped unit stays generic. Removed again when no groups are set.
+  dropin_dir="$UNIT_DIR/pico-emulator.service.d"
+  dropin="$dropin_dir/10-site-groups.conf"
+  if [ "${#EXTRA_GROUPS[@]}" -gt 0 ]; then
+    want="$(printf '# Written by install-pico-emulator.sh from the site configuration.\n[Service]\nSupplementaryGroups=kvm %s\n' "${EXTRA_GROUPS[*]}")"
+    if [ -f "$dropin" ] && [ "$(cat "$dropin")" = "$want" ]; then
+      info "unchanged: ${dropin#"$UNIT_DIR"/}"
+    else
+      run install -d -m 0755 "$dropin_dir"
+      if [ "$DRY_RUN" -eq 1 ]; then printf '  would write: %s\n' "$dropin"; else printf '%s\n' "$want" > "$dropin"; fi
+      changed_units=1
+      info "installed: ${dropin#"$UNIT_DIR"/} (SupplementaryGroups=kvm ${EXTRA_GROUPS[*]})"
+    fi
+  elif [ -f "$dropin" ] && grep -q '^# Written by install-pico-emulator.sh' "$dropin"; then
+    run rm -f "$dropin"
+    changed_units=1
+    info "removed: ${dropin#"$UNIT_DIR"/} (no extra groups configured)"
+  fi
   if [ "$changed_units" -eq 1 ]; then
     run systemctl daemon-reload
     info "reloaded systemd"

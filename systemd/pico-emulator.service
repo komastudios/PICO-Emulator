@@ -9,7 +9,7 @@ StartLimitBurst=3
 Type=exec
 User=android
 Group=android
-SupplementaryGroups=kvm sitegroup
+SupplementaryGroups=kvm
 WorkingDirectory=/opt/android/PICO/linux-pico-package
 Environment=HOME=/var/lib/android
 Environment=DISPLAY=:99
