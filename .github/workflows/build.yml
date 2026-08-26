@@ -11,7 +11,7 @@
 #          legs on independent runners on the `snapshot` branch.
 # package: runtime image from the archive, extract; on `snapshot` compare a
 #          against b and, only if they are byte-identical, publish a release
-#          archive as tag v0.<commit count> with a GitHub Release.
+#          archive as tag v<emulator>.<commit count>+<upstream> with a GitHub Release.
 name: build
 
 on:
@@ -350,7 +350,7 @@ jobs:
         # Only from a build that passed the a/b gate: the previous steps fail
         # the job otherwise, so reaching here with second_build=true means the
         # two independent compiles were byte-identical.
-        # Releases are cut from snapshot only; v0.<N> counts commits on the
+        # Releases are cut from snapshot only; N counts commits on the
         # branch, so two branches could otherwise claim the same version.
         if: github.ref == 'refs/heads/snapshot' && needs.keys.outputs.publish == 'true' && needs.keys.outputs.second_build == 'true'
         id: release

@@ -134,13 +134,13 @@ The lock assertion still holds: it names four projects, all of them synced, and 
 | Branch | What `build.yml` does |
 | --- | --- |
 | any branch (`main` included) | one compile leg, package, `SHA256SUMS` — a build, not a proof |
-| `snapshot` (protected) | two compile legs on independent runners; the package job fails unless `task repro:check` finds them byte-identical; only then `task release` assembles the archive and publishes it as a GitHub Release tagged `v0.<N>` |
+| `snapshot` (protected) | two compile legs on independent runners; the package job fails unless `task repro:check` finds them byte-identical; only then `task release` assembles the archive and publishes it as a GitHub Release tagged `v<emulator version>.<N>+<upstream base>` |
 
-`N` is the number of commits reachable from the released commit (`git rev-list --count HEAD`), the scheme ANGLE and Chromium use for build numbers: monotonic on a branch, no counter to store. The release archive `pico-emulator-linux-v0.<N>.tar.zst` is self-contained — `linux-pico-package/`, `scripts/install-pico-emulator.sh`, the systemd units, a README, a `RELEASE` provenance file (commit, manifest, epoch, lock key, every project commit) and a `SHA256SUMS` over all of it — and installs with nothing but tar, zstd and a shell:
+The version reads as `v0.7.6.35+33.1.16`: `0.7.6` is the vendor's emulator version (`Pkg.Revision` in the package's `source.properties`; the binary reports it as `0.7.6.0`), `N` replaces its fourth component, and `+33.1.16` is the upstream Android Emulator release the vendor tree is based on (`Pkg.RevisionOld`). `N` is the number of commits reachable from the released commit (`git rev-list --count HEAD`), the scheme ANGLE and Chromium use for build numbers: monotonic on a branch, no counter to store. The release archive `pico-emulator-linux-<version>.tar.zst` is self-contained — `linux-pico-package/`, `scripts/install-pico-emulator.sh`, the systemd units, a README, a `RELEASE` provenance file (commit, manifest, epoch, lock key, every project commit) and a `SHA256SUMS` over all of it — and installs with nothing but tar, zstd and a shell:
 
 ```bash
-tar --zstd -xf pico-emulator-linux-v0.42.tar.zst
-cd pico-emulator-linux-v0.42 && sha256sum -c --quiet SHA256SUMS
+tar --zstd -xf pico-emulator-linux-v0.7.6.42+33.1.16.tar.zst
+cd pico-emulator-linux-v0.7.6.42+33.1.16 && sha256sum -c --quiet SHA256SUMS
 sudo scripts/install-pico-emulator.sh          # reads /etc/pico-emulator/site.conf if present
 ```
 

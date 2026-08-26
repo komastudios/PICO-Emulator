@@ -13,9 +13,12 @@
 #     RELEASE                 provenance: version, commit, lock, manifest, keys
 #     SHA256SUMS              over every file in the archive
 #
-# Version: v0.<N> where N counts the commits reachable from HEAD, the way ANGLE
-# and Chromium derive build numbers, so it is monotonic on a branch and needs
-# no state outside git. --version overrides it.
+# Version: v<Pkg.Revision>.<N>+<Pkg.RevisionOld>, e.g. v0.7.6.35+33.1.16.
+# Pkg.Revision is the vendor's emulator version (the binary reports it as
+# 0.7.6.0), Pkg.RevisionOld the upstream Android Emulator it is based on; both
+# come from the package's own source.properties. N counts the commits
+# reachable from HEAD, the way ANGLE and Chromium derive build numbers, so it
+# is monotonic on a branch and needs no state outside git. --version overrides.
 set -euo pipefail
 export LC_ALL=C
 
@@ -35,7 +38,14 @@ done
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 commit="$(git -C "$repo_dir" rev-parse HEAD)"
 count="$(git -C "$repo_dir" rev-list --count HEAD)"
-[ -n "$version" ] || version="v0.$count"
+props="$package/picoemulator/source.properties"
+if [ -z "$version" ]; then
+  [ -f "$props" ] || { printf 'no %s to read the version prefix from\n' "$props" >&2; exit 1; }
+  rev="$(sed -n 's/^Pkg.Revision=//p' "$props" | tr -d '\r')"
+  base="$(sed -n 's/^Pkg.RevisionOld=//p' "$props" | tr -d '\r')"
+  [ -n "$rev" ] || { printf 'Pkg.Revision missing in %s\n' "$props" >&2; exit 1; }
+  version="v$rev.$count${base:++$base}"
+fi
 epoch="$(sed -n 's/^SOURCE_DATE_EPOCH=//p' "$repo_dir/revisions.lock")"
 manifest_rev="$(sed -n 's/^MANIFEST_REV=//p' "$repo_dir/revisions.lock")"
 [ -n "$epoch" ] || { printf 'revisions.lock has no SOURCE_DATE_EPOCH\n' >&2; exit 1; }
@@ -54,6 +64,7 @@ cp -p "$repo_dir/docs/host-install.md" "$root/README.md"
   printf 'version=%s\n' "$version"
   printf 'repository=https://github.com/komastudios/PICO-Emulator\n'
   printf 'commit=%s\ncommit_count=%s\n' "$commit" "$count"
+  printf 'emulator_version=%s\nupstream_emulator_version=%s\n' "${rev:-}" "${base:-}"
   printf 'manifest_rev=%s\nsource_date_epoch=%s\n' "$manifest_rev" "$epoch"
   [ -n "$lock_key" ] && printf 'lock_key=%s\n' "$lock_key"
   printf 'variant=%s\n' "$(cat "$package/.build-variant" 2>/dev/null || echo unknown)"
