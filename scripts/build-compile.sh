@@ -63,6 +63,10 @@ else
   printf 'Compiler cache: disabled\n'
 fi
 
+# rebuild.sh has no build-jobs flag (--test_jobs only drives CTest, which is
+# disabled here); cmake --build honours this variable, so JOBS reaches ninja.
+export CMAKE_BUILD_PARALLEL_LEVEL="$JOBS"
+
 cd "$src/external/qemu"
 rc=0
 ./android/rebuild.sh \

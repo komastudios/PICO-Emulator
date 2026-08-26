@@ -91,7 +91,7 @@ The lavapipe hash is unchanged — it is the distribution's own Mesa build, copi
 | `lib64/libgfxstream_backend.so` | `05e530ea99328d6c56251457510ea2c58f8c538f94ae241f09dad054e9d04754` |
 | `lib64/vulkan/libvulkan_lvp.so` | `0004262f4dc95585492d55925face67a79a7c869ad8760b42ae01bd0bdb807a2` |
 
-A build from the trimmed source archive of the staged pipeline (`task sources` → `task compile`) reproduced the untrimmed build file for file, so the trim rules do not affect the output.
+A build from the trimmed source archive of the staged pipeline (`task sources` → `task compile`) reproduced the untrimmed build file for file, so the trim rules do not affect the output; a further build from that archive in another fresh root produced the same hashes again.
 
 The sources of nondeterminism that had to be removed, each found by comparing two clean-room builds with `diffoscope`:
 
