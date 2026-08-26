@@ -46,7 +46,14 @@ if command -v actionlint >/dev/null; then
   actionlint
 fi
 if command -v systemd-analyze >/dev/null; then
-  systemd-analyze verify systemd/*.service
+  # The ExecStart paths exist only on a host the package is installed on, so
+  # anywhere else systemd-analyze reports them missing. That is not a unit
+  # file error; anything else it says about these units is.
+  if ! out="$(systemd-analyze verify systemd/*.service 2>&1)"; then
+    out="$(printf '%s\n' "$out" | grep -E '^[[:alnum:]_.-]+\.service:' \
+             | grep -v 'is not executable: No such file or directory' || true)"
+    if [ -n "$out" ]; then printf '%s\n' "$out" >&2; exit 1; fi
+  fi
 fi
 
 # Only scripts may carry an executable bit. Checked against what git tracks,
