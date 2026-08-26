@@ -83,7 +83,7 @@ The lock fixes *what* is built; these fix *how*, so that two builds of the same 
 | `umask 022` | `scripts/lib/build-env.sh`, so distribution file modes do not depend on the caller |
 | `PYTHONHASHSEED=0` | `scripts/lib/build-env.sh`; build-system Python iterates sets (the NOTICE generator) |
 | Compiler cache off (`COMPILER_CACHE=none`) | `Taskfile.yml` default; a cache hit replays a stored object and would mask a difference. `COMPILER_CACHE=auto` re-enables the bundled sccache for development builds, with its cache under `/cache/sccache` |
-| Fork-side fixes | qemu `28104445` derives the SDK build number from `SOURCE_DATE_EPOCH` instead of the wall clock; qemu `fe8473f9` seeds the string-obfuscation key from it and sorts the NOTICE output |
+| Fork-side fixes | qemu `28104445` derives the SDK build number from `SOURCE_DATE_EPOCH` instead of the wall clock; qemu `fe8473f9` seeds the string-obfuscation key from it and sorts the NOTICE output; qemu `27ee429e` runs Qt autogen sequentially so moc output does not depend on uic timing |
 
 Deriving the epoch from the reviewed commit rather than wall-clock time keeps `__DATE__`/`__TIME__` and any embedded timestamp a property of the source. Re-resolve the base image digest when you intend to move it:
 
