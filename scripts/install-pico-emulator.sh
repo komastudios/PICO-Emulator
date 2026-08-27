@@ -337,14 +337,16 @@ else
   dropin_dir="$UNIT_DIR/pico-emulator.service.d"
   dropin="$dropin_dir/10-site-groups.conf"
   if [ "${#EXTRA_GROUPS[@]}" -gt 0 ]; then
-    want="$(printf '# Written by install-pico-emulator.sh from the site configuration.\n[Service]\nSupplementaryGroups=kvm %s\n' "${EXTRA_GROUPS[*]}")"
+    # systemd appends SupplementaryGroups= from drop-ins to the unit's own
+    # list, so only the site groups go here; kvm comes from the shipped unit.
+    want="$(printf '# Written by install-pico-emulator.sh from the site configuration.\n[Service]\nSupplementaryGroups=%s\n' "${EXTRA_GROUPS[*]}")"
     if [ -f "$dropin" ] && [ "$(cat "$dropin")" = "$want" ]; then
       info "unchanged: ${dropin#"$UNIT_DIR"/}"
     else
       run install -d -m 0755 "$dropin_dir"
       if [ "$DRY_RUN" -eq 1 ]; then printf '  would write: %s\n' "$dropin"; else printf '%s\n' "$want" > "$dropin"; fi
       changed_units=1
-      info "installed: ${dropin#"$UNIT_DIR"/} (SupplementaryGroups=kvm ${EXTRA_GROUPS[*]})"
+      info "installed: ${dropin#"$UNIT_DIR"/} (adds SupplementaryGroups=${EXTRA_GROUPS[*]})"
     fi
   elif [ -f "$dropin" ] && grep -q '^# Written by install-pico-emulator.sh' "$dropin"; then
     run rm -f "$dropin"
