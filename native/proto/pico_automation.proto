@@ -1,0 +1,88 @@
+syntax = "proto3";
+package pico.automation.v1;
+import "google/protobuf/empty.proto";
+
+// Served on the emulator's existing authenticated gRPC endpoint.
+service PicoAutomation {
+  rpc GetCapabilities(google.protobuf.Empty) returns (Capabilities);
+  rpc GetState(google.protobuf.Empty) returns (State);
+  rpc Acquire(AcquireRequest) returns (Lease);
+  rpc Renew(Command) returns (Lease);
+  rpc Apply(ApplyRequest) returns (State);
+  rpc TimedPress(TimedPressRequest) returns (State);
+  // Exact retry of last successful ReleaseAll is a no-op only while the same
+  // lease is still owned, epoch/token match, and no later sequence succeeded.
+  rpc ReleaseAll(Command) returns (State);
+  // Exact retry of last successful Release is a no-op only while unowned and
+  // epoch/token/sequence match that release and no subsequent Acquire succeeded.
+  // Cleanup retries still require a valid timeout/deadline and ready pipes;
+  // they return current State without mutation or renewal. Never release a new owner.
+  rpc Release(Command) returns (State);
+}
+message Capabilities {
+  uint32 api_version = 1;
+  uint32 lease_ms = 2;
+  uint32 max_timeout_ms = 3;
+  bool native_xr = 4;
+  bool guest_keyboard = 5;
+  bool independent_hands = 6;
+  bool disconnect = 7;
+  repeated uint32 supported_linux_key_codes = 8;
+}
+// input_epoch is opaque and changes on PICO service-start/pipe loss/reconnect.
+message AcquireRequest { string input_epoch = 1; uint32 timeout_ms = 2; }
+message Command {
+  string input_epoch = 1;
+  string lease_token = 2;
+  // Strictly increasing except the exact successful cleanup retries above.
+  uint64 sequence = 3;
+  uint32 timeout_ms = 4;
+}
+message Lease { string input_epoch = 1; string lease_token = 2; uint32 remaining_ms = 3; }
+message Vec3 { double x = 1; double y = 2; double z = 3; }
+message Quaternion { double x = 1; double y = 2; double z = 3; double w = 4; }
+// Metres; +X right, +Y up, -Z forward; unit quaternion xyzw.
+message Pose { Vec3 position = 1; Quaternion orientation = 2; }
+enum Hand { HAND_UNSPECIFIED = 0; LEFT = 1; RIGHT = 2; }
+enum Connection { CONNECTION_UNCHANGED = 0; CONNECT_LEFT = 1; CONNECT_RIGHT = 2; CONNECT_BOTH = 3; }
+enum Button {
+  BUTTON_UNSPECIFIED = 0;
+  HOME = 1; APP = 2; AX = 3; BY = 4; GRIP = 5; STICK = 6; TRIGGER = 7;
+  TOUCH_AX = 8; TOUCH_BY = 9; TOUCH_STICK = 10; TOUCH_TRIGGER = 11; TOUCH_THUMBREST = 12;
+}
+// Presence replaces this hand's controls; omitted pose preserves its pose.
+message HandState {
+  Pose pose = 1;
+  double stick_x = 2; double stick_y = 3; // [-1,1]
+  double trigger = 4; double grip = 5; // [0,1]
+  repeated Button buttons_down = 6;
+}
+// Linux evdev codes, NOT Android keycodes or Qt keys. Entire held-key set.
+// Capability whitelist is authoritative. Injection bypasses Qt shortcuts.
+message KeyboardState { repeated uint32 linux_key_codes_down = 1; }
+message ApplyRequest {
+  Command command = 1;
+  Pose hmd = 2;
+  HandState left = 3;
+  HandState right = 4;
+  KeyboardState keyboard = 5;
+  Connection connection = 6;
+}
+message HandButton { Hand hand = 1; Button button = 2; }
+message TimedPressRequest {
+  Command command = 1;
+  uint32 duration_ms = 2;
+  oneof control { HandButton hand_button = 3; uint32 linux_key_code = 4; }
+}
+message State {
+  string input_epoch = 1;
+  bool ready = 2;
+  bool automation_owned = 3;
+  uint32 lease_remaining_ms = 4;
+  uint64 last_sequence = 5;
+  Pose hmd = 6;
+  HandState left = 7;
+  HandState right = 8;
+  KeyboardState keyboard = 9;
+  Connection connection = 10; // Requested selection; not a guest acknowledgment.
+}

@@ -52,7 +52,7 @@ vars:
   # LOCK_KEY names the trimmed source archive: a content hash of the lock, the
   # pins and the trim rules. BUILDER_KEY names the toolchain image.
   LOCK_KEY:
-    sh: cat '{{.ROOT_DIR}}/revisions{{if eq (.DEBUG | default "0") "1"}}-debug{{end}}.lock' '{{.ROOT_DIR}}/manifests/pins{{if eq (.DEBUG | default "0") "1"}}-debug{{end}}.xml' '{{.ROOT_DIR}}/scripts/source-trim.txt' '{{.ROOT_DIR}}/scripts/source-required.txt' '{{.ROOT_DIR}}/scripts/source-exclude.txt' '{{.ROOT_DIR}}/scripts/build-sync.sh' '{{.ROOT_DIR}}/scripts/build-trim.sh' 2>/dev/null | sha256sum | cut -c1-16
+    sh: cat '{{.ROOT_DIR}}/revisions{{if eq (.DEBUG | default "0") "1"}}-debug{{end}}.lock' '{{.ROOT_DIR}}/manifests/pins{{if eq (.DEBUG | default "0") "1"}}-debug{{end}}.xml' '{{.ROOT_DIR}}/scripts/source-trim.txt' '{{.ROOT_DIR}}/scripts/source-required.txt' '{{.ROOT_DIR}}/scripts/source-exclude.txt' '{{.ROOT_DIR}}/scripts/build-sync.sh' '{{.ROOT_DIR}}/scripts/build-trim.sh' '{{.ROOT_DIR}}/native/patch.lock' '{{.ROOT_DIR}}/patches/pico-native-automation.patch' '{{.ROOT_DIR}}/scripts/apply-native-patch.sh' 2>/dev/null | sha256sum | cut -c1-16
   BUILDER_KEY:
     sh: sh -c "sed -n '/^FROM base AS builder/,/^# -* sources/p' '{{.ROOT_DIR}}/Containerfile'; printf '%s' '{{.DEBIAN_IMAGE}}'" | sha256sum | cut -c1-16
   REGISTRY: '{{.REGISTRY | default "ghcr.io/komastudios"}}'

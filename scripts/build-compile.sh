@@ -44,6 +44,8 @@ if [ -f "$src/.pico-provenance" ]; then
   grep -E '^PROJECT (external/qemu|hardware/google/gfxstream) ' "$src/.pico-provenance" || true
 fi
 
+"$(dirname "$0")/apply-native-patch.sh" "$src"
+
 # --- build -----------------------------------------------------------------
 # The emulator's CMakeLists sets RULE_LAUNCH_COMPILE from OPTION_CCACHE, so a
 # compiler cache fronts *every* compile when one is found. rebuild.sh asks for
@@ -74,26 +76,18 @@ rc=0
   --test_jobs "$JOBS" \
   --ccache "$compiler_cache" \
   --task-disable Clean \
-  --task-disable CTest || rc=$?
+  --task-disable CTest \
+  --task-disable AccelerationCheck \
+  --task-disable ZipIntegrationTests || rc=$?
 
 dist="$src/external/qemu/objs/distribution/picoemulator"
 
-# rebuild.sh is known to fail its final acceleration check on a CPU-only host
-# (emulator-check cannot load libnvidia-ml.so.1) *after* the distribution has
-# already been produced. Tolerate that specific outcome only, by requiring a
-# complete tree; any other failure is fatal.
+# Skip the CPU-only NVML probe and APK test-bundle packaging (trimmed JDK).
+# Native compilation and install remain mandatory. Never accept
+# stale distribution files as evidence that a failed incremental compile worked.
 if [ "$rc" -ne 0 ]; then
-  printf 'rebuild.sh exited %d; verifying the distribution is complete.\n' "$rc" >&2
-  for required in \
-      "$dist/emulator" \
-      "$dist/qemu/linux-x86_64/qemu-system-x86_64" \
-      "$dist/lib64/libgfxstream_backend.so"; do
-    if [ ! -s "$required" ]; then
-      printf 'Build failed: %s is missing.\n' "$required" >&2
-      exit "$rc"
-    fi
-  done
-  printf 'Distribution is complete; treating the exit status as the known NVML check.\n' >&2
+  printf 'Build failed: rebuild.sh exited %d. No package will be emitted.\n' "$rc" >&2
+  exit "$rc"
 fi
 
 test -x "$dist/emulator"

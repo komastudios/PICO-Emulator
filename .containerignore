@@ -5,6 +5,8 @@
 !scripts/
 !config/
 !manifests/
+!native/
+!patches/pico-native-automation.patch
 !revisions.lock
 !revisions-debug.lock
 

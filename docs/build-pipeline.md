@@ -148,9 +148,15 @@ sudo scripts/install-pico-emulator.sh          # reads /etc/pico-emulator/site.c
 
 Measured on the first runs (2026-08-26, `ubuntu-24.04` runners, one 145 GB volume with ~118 GB free after `task ci:cleanup`): keys 14 s; builder 1 m 43 s including the push; sources 22 m (repo sync ~10 m, tar+zstd ~8.5 m, push 23 s; peak 53 GB); compile 1 h 03 m – 1 h 22 m per leg (archive pull 71 s, unpack 46 s, ninja ~1 h 18 m; peak 85 GB used). With the sources and builder promotions already present a push runs only the two compile legs and the package job. The hosted-runner binaries matched the local isolated-root builds hash for hash — see *Reproducibility status* in `MANIFEST.md`.
 
-## Tolerated build failure
+## CPU-only acceleration probe
 
-`rebuild.sh` runs an acceleration check at the very end that cannot load `libnvidia-ml.so.1` on a CPU-only host, so it exits non-zero *after* the distribution is complete. `container-build.sh` tolerates exactly that case: it verifies `emulator`, `qemu-system-x86_64` and `libgfxstream_backend.so` all exist and are non-empty, and only then treats the exit status as the known NVML check. Any other failure is fatal.
+The recipe disables only `AccelerationCheck`, the final host probe that fails to load `libnvidia-ml.so.1` on this CPU-only builder. All remaining `rebuild.sh` failures are fatal. Existing distribution files are never accepted as proof that a failed incremental compile succeeded; that could package stale binaries.
+
+## Native automation overlay
+
+The base qemu and gfxstream revisions remain pinned by `revisions.lock`. The native automation implementation is an additional public source patch, `patches/pico-native-automation.patch`, pinned by SHA-256 and base qemu revision in `native/patch.lock`. The compile stage verifies the base provenance, applies the exact patch (or verifies it is already applied), and records its digest as `PATCH pico-native-automation <sha>` in `.pico-provenance`. The archive/cache key includes the patch, patch lock and application script. See `native/README.md` for the typed protocol, tests and implementation ownership.
+
+The current native candidate is a build from base plus overlay, not an unchanged-base binary and not a new double-build reproducibility claim. A later reviewed fork commit can replace the overlay through the normal revision-lock workflow. Reusing a synchronized checkout whose prior overlay digest changed requires a fresh sync cache; the script will not silently discard native development edits.
 
 ## ANGLE prebuilt
 
@@ -167,3 +173,5 @@ PODMAN_FLAGS="--cgroup-manager=cgroupfs --events-backend=file" task build
 ## Where the sources come from
 
 Only two projects carry Linux-port changes; both are forks pinned by the manifest, and both are also mirrored as patch files under `patches/`, inventoried in `patches/README.md`. See **Sources** in `README.md` for the fork URLs and branches.
+
+The compile recipe also disables `ZipIntegrationTests`: it packages Android test APKs using a JDK absent from the promoted trimmed source archive. It is not the native emulator distribution or a test execution. Native compile/install failures remain fatal.

@@ -21,3 +21,7 @@ The required patches were captured directly from the source trees used to build 
 ## Commit structure on the forks
 
 The two required patches are each split into logical commits on their branches, so individual changes can be reviewed, reverted, or rebased independently. The fork branches listed above carry every commit with its subject and files.
+
+## Native automation overlay
+
+`pico-native-automation.patch` is applied after the locked qemu base by `scripts/apply-native-patch.sh`, unlike the historical port patch mirrors above. `native/patch.lock` pins its base revision and SHA-256; native/proto contains the protocol mirror. The build records both base and overlay in package provenance.

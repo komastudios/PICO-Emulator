@@ -1,0 +1,1790 @@
+diff --git a/android-qemu2-glue/qemu-picoemu-agent-impl.cpp b/android-qemu2-glue/qemu-picoemu-agent-impl.cpp
+index fab67f54..abdabc50 100644
+--- a/android-qemu2-glue/qemu-picoemu-agent-impl.cpp
++++ b/android-qemu2-glue/qemu-picoemu-agent-impl.cpp
+@@ -47,7 +47,12 @@ static void set_guest_picoemu_contents(const char* name,
+ static const QAndroidPicoemuAgent picoemuAgent = {
+         .setEnabled = &android::emulation::PicoemuPipeManager::setEnabled,
+         .registerGuestPicoemuCallback = set_guest_picoemu_callback,
+-        .sendGuestPicoemuContents = set_guest_picoemu_contents};
++        .sendGuestPicoemuContents = set_guest_picoemu_contents,
++        .beginInputFrame = &android::emulation::PicoemuPipeManager::beginInputFrame,
++        .endInputFrame = &android::emulation::PicoemuPipeManager::endInputFrame,
++        .inputReady = &android::emulation::PicoemuPipeManager::inputReady,
++        .inputCapacity = &android::emulation::PicoemuPipeManager::inputCapacity,
++        .clearInputQueue = &android::emulation::PicoemuPipeManager::clearInputQueue};
+ 
+ extern "C" const QAndroidPicoemuAgent* const gQAndroidPicoemuAgent =
+         &picoemuAgent;
+diff --git a/android-qemu2-glue/qemu-setup.cpp b/android-qemu2-glue/qemu-setup.cpp
+index 462ba9d3..fd1d23b0 100644
+--- a/android-qemu2-glue/qemu-setup.cpp
++++ b/android-qemu2-glue/qemu-setup.cpp
+@@ -91,6 +91,7 @@ extern "C" {
+ #include "android/emulation/control/EmulatorService.h"
+ #include "android/emulation/control/GrpcServices.h"
+ #include "android/emulation/control/UiController.h"
++#include "PicoAutomationService.h"
+ #include "android/emulation/control/adb/AdbService.h"
+ #include "android/emulation/control/incubating/AvdService.h"
+ #include "android/emulation/control/incubating/CarService.h"
+@@ -445,6 +446,7 @@ int qemu_setup_grpc() {
+                     .withService(h2o)
+                     .withService(snapshot)
+                     .withService(uiController)
++                    .withService(pico::automation::createService())
+                     .withService(stats)
+                     .withService(car)
+                     .withService(avd)
+diff --git a/android/android-grpc/security/src/android/emulation/control/secure/emulator_access.json b/android/android-grpc/security/src/android/emulation/control/secure/emulator_access.json
+index 39f4337a..54f7e7c9 100644
+--- a/android/android-grpc/security/src/android/emulation/control/secure/emulator_access.json
++++ b/android/android-grpc/security/src/android/emulation/control/secure/emulator_access.json
+@@ -36,6 +36,16 @@
+             // the given method is *NOT* present.
+             "allowed": [
+                 "/android.emulation.control.EmulatorController/.*",
++                // Native PICO automation uses the same authenticated discovery-token issuer.
++                "/pico.automation.v1.PicoAutomation/GetCapabilities",
++                "/pico.automation.v1.PicoAutomation/GetState",
++                "/pico.automation.v1.PicoAutomation/Acquire",
++                "/pico.automation.v1.PicoAutomation/Renew",
++                "/pico.automation.v1.PicoAutomation/Apply",
++                "/pico.automation.v1.PicoAutomation/TimedPress",
++                "/pico.automation.v1.PicoAutomation/ReleaseAll",
++                "/pico.automation.v1.PicoAutomation/Release",
++
+                 // Interaction with extended controls.
+                 "/android.emulation.control.UiController/.*",
+                 // Snapshot related functions
+diff --git a/android/android-grpc/services-stack/CMakeLists.txt b/android/android-grpc/services-stack/CMakeLists.txt
+index 370f0ca3..6d75adf0 100644
+--- a/android/android-grpc/services-stack/CMakeLists.txt
++++ b/android/android-grpc/services-stack/CMakeLists.txt
+@@ -30,6 +30,7 @@ target_link_libraries(
+          emulator-stats-server-impl
+          snapshot-service-server-impl
+          ui-controller-server-impl
++         pico-automation-server
+          grpc++
+          grpc++_reflection_whole)
+ 
+diff --git a/android/android-grpc/services/CMakeLists.txt b/android/android-grpc/services/CMakeLists.txt
+index ba772403..f0f5c688 100644
+--- a/android/android-grpc/services/CMakeLists.txt
++++ b/android/android-grpc/services/CMakeLists.txt
+@@ -9,5 +9,6 @@ add_subdirectory(gnss)
+ add_subdirectory(incubating)
+ add_subdirectory(snapshot)
+ add_subdirectory(ui-controller)
++add_subdirectory(pico-automation)
+ add_subdirectory(bluetooth)
+ add_subdirectory(waterfall)
+diff --git a/android/android-grpc/services/pico-automation/AutomationPolicy.h b/android/android-grpc/services/pico-automation/AutomationPolicy.h
+new file mode 100644
+index 00000000..dd11c6f7
+--- /dev/null
++++ b/android/android-grpc/services/pico-automation/AutomationPolicy.h
+@@ -0,0 +1,37 @@
++// Copyright 2026 Koma Studios. Licensed under the Apache License, Version 2.0.
++#pragma once
++#include <algorithm>
++#include <chrono>
++#include <cstdint>
++#include <string>
++namespace pico {
++namespace automation {
++using Monotonic = std::chrono::steady_clock;
++enum class Rejection { None, Deadline, Epoch, Token, Sequence };
++inline Rejection checkCommand(const std::string& expectedEpoch,
++                              const std::string& epoch,
++                              const std::string& expectedToken,
++                              const std::string& token,
++                              uint64_t last,
++                              uint64_t sequence,
++                              Monotonic::time_point now,
++                              Monotonic::time_point deadline,
++                              Monotonic::time_point leaseDeadline) {
++    if (now >= deadline)
++        return Rejection::Deadline;
++    if (epoch != expectedEpoch)
++        return Rejection::Epoch;
++    if (expectedToken.empty() || token != expectedToken || now >= leaseDeadline)
++        return Rejection::Token;
++    if (!sequence || sequence <= last)
++        return Rejection::Sequence;
++    return Rejection::None;
++}
++inline Monotonic::time_point pressDeadline(
++        Monotonic::time_point now,
++        unsigned durationMs,
++        Monotonic::time_point leaseDeadline) {
++    return std::min(leaseDeadline, now + std::chrono::milliseconds(durationMs));
++}
++}  // namespace automation
++}  // namespace pico
+diff --git a/android/android-grpc/services/pico-automation/AutomationPolicy_test.cpp b/android/android-grpc/services/pico-automation/AutomationPolicy_test.cpp
+new file mode 100644
+index 00000000..12e9b378
+--- /dev/null
++++ b/android/android-grpc/services/pico-automation/AutomationPolicy_test.cpp
+@@ -0,0 +1,39 @@
++// Copyright 2026 Koma Studios. Licensed under the Apache License, Version 2.0.
++#include "AutomationPolicy.h"
++#include <cstdlib>
++#include <iostream>
++using namespace pico::automation;
++int main() {
++    using namespace std::chrono;
++    auto now = Monotonic::time_point(seconds(100));
++    auto check = [&](const std::string& epoch, const std::string& token,
++                     uint64_t seq, int queueMs, int leaseMs = 5000) {
++        return checkCommand("boot:2", epoch, "secret", token, 7, seq,
++                            now + milliseconds(queueMs),
++                            now + milliseconds(100),
++                            now + milliseconds(leaseMs));
++    };
++    auto require = [](bool v) {
++        if (!v) {
++            std::cerr << "policy regression\n";
++            std::exit(1);
++        }
++    };
++    require(check("boot:2", "secret", 8, 0) == Rejection::None);
++    require(check("boot:1", "secret", 8, 0) == Rejection::Epoch);
++    require(check("boot:2", "other", 8, 0) == Rejection::Token);
++    require(check("boot:2", "secret", 7, 0) == Rejection::Sequence);
++    require(check("boot:2", "secret", 0, 0) == Rejection::Sequence);
++    require(check("boot:2", "secret", 8, 100) == Rejection::Deadline);
++    require(check("boot:2", "secret", 8, 10, 10) == Rejection::Token);
++    require(checkCommand("boot:2", "boot:2", "", "", 0, 1, now,
++                         now + seconds(1),
++                         now + seconds(5)) == Rejection::Token);
++    require(pressDeadline(now, 5000, now + milliseconds(30)) ==
++            now + milliseconds(30));
++    require(pressDeadline(now, 20, now + seconds(5)) == now + milliseconds(20));
++    // Arbitrary queue delay cannot revive an expired mutation or old epoch.
++    for (int delay = 100; delay < 10000; ++delay)
++        require(check("boot:2", "secret", 8, delay) == Rejection::Deadline);
++    std::cout << "automation policy: 9910 checks passed\n";
++}
+diff --git a/android/android-grpc/services/pico-automation/CMakeLists.txt b/android/android-grpc/services/pico-automation/CMakeLists.txt
+new file mode 100644
+index 00000000..42624f92
+--- /dev/null
++++ b/android/android-grpc/services/pico-automation/CMakeLists.txt
+@@ -0,0 +1,5 @@
++android_grpc_service_lib(TARGET pico-automation-service SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/proto SOURCES pico_automation.proto)
++install(FILES proto/pico_automation.proto DESTINATION lib)
++android_add_library(TARGET pico-automation-server LICENSE Apache-2.0 SRC PicoAutomationService.cpp DEPS pico-automation-service grpc++)
++target_include_directories(pico-automation-server PUBLIC ${CMAKE_CURRENT_LIST_DIR})
++target_link_libraries(pico-automation-server PUBLIC pico-automation-service)
+diff --git a/android/android-grpc/services/pico-automation/PicoAutomationService.cpp b/android/android-grpc/services/pico-automation/PicoAutomationService.cpp
+new file mode 100644
+index 00000000..e81386e3
+--- /dev/null
++++ b/android/android-grpc/services/pico-automation/PicoAutomationService.cpp
+@@ -0,0 +1,153 @@
++// Copyright 2026 Koma Studios. Licensed under the Apache License, Version 2.0.
++#include "PicoAutomationService.h"
++#include <atomic>
++namespace pico {
++namespace automation {
++namespace {
++std::mutex dispatchMutex;
++Dispatcher dispatcher;
++std::atomic<int> queued{0};
++}  // namespace
++void setDispatcher(Dispatcher next) {
++    std::lock_guard<std::mutex> lock(dispatchMutex);
++    dispatcher = std::move(next);
++}
++bool supportedKey(unsigned k) {
++    return (k >= 1 && k <= 83) || k == 87 || k == 88 || k == 96 || k == 97 ||
++           k == 100 || (k >= 102 && k <= 111) || k == 125 || k == 126 ||
++           k == 158;
++}
++class Service final : public v1::PicoAutomation::Service {
++    grpc::Status run(grpc::ServerContext* ctx,
++                     std::shared_ptr<Job> job,
++                     unsigned timeout) {
++        if (!timeout || timeout > 5000)
++            return {grpc::StatusCode::INVALID_ARGUMENT,
++                    "timeout_ms must be 1..5000"};
++        job->deadline = Clock::now() + std::chrono::milliseconds(timeout);
++        if (ctx->deadline() != std::chrono::system_clock::time_point::max()) {
++            auto remaining = ctx->deadline() - std::chrono::system_clock::now();
++            job->deadline = std::min(
++                    job->deadline,
++                    Clock::now() + std::chrono::duration_cast<Clock::duration>(
++                                           remaining));
++        }
++        {
++            std::lock_guard<std::mutex> lock(dispatchMutex);
++            if (!dispatcher)
++                return {grpc::StatusCode::UNAVAILABLE,
++                        "Qt PICO simulator is unavailable"};
++            if (queued.load() >= 64)
++                return {grpc::StatusCode::RESOURCE_EXHAUSTED,
++                        "Qt command queue full"};
++            ++queued;
++            // Count remains until Qt consumes the job, including canceled jobs.
++            auto counted =
++                    std::shared_ptr<Job>(job.get(), [job](Job*) { --queued; });
++            dispatcher(std::move(counted));
++        }
++        std::unique_lock<std::mutex> lock(job->mutex);
++        while (!job->finished) {
++            if (Clock::now() >= job->deadline || ctx->IsCancelled()) {
++                job->canceled = true;
++                return {grpc::StatusCode::DEADLINE_EXCEEDED,
++                        "command expired before Qt completion"};
++            }
++            job->cv.wait_for(lock, std::chrono::milliseconds(5));
++        }
++        return job->status;
++    }
++    grpc::Status GetCapabilities(grpc::ServerContext*,
++                                 const google::protobuf::Empty*,
++                                 v1::Capabilities* out) override {
++        out->set_api_version(1);
++        out->set_lease_ms(5000);
++        out->set_max_timeout_ms(5000);
++        // Host implementation support only: never an assertion of guest
++        // consumption.
++        out->set_native_xr(true);
++        out->set_guest_keyboard(true);
++        out->set_independent_hands(true);
++        for (unsigned k = 1; k < 256; ++k)
++            if (supportedKey(k))
++                out->add_supported_linux_key_codes(k);
++        return grpc::Status::OK;
++    }
++    grpc::Status GetState(grpc::ServerContext* ctx,
++                          const google::protobuf::Empty*,
++                          v1::State* out) override {
++        auto j = std::make_shared<Job>();
++        j->operation = Operation::State;
++        auto s = run(ctx, j, 5000);
++        *out = j->state;
++        return s;
++    }
++    grpc::Status Acquire(grpc::ServerContext* ctx,
++                         const v1::AcquireRequest* in,
++                         v1::Lease* out) override {
++        auto j = std::make_shared<Job>();
++        j->operation = Operation::Acquire;
++        j->acquire = *in;
++        auto s = run(ctx, j, in->timeout_ms());
++        *out = j->lease;
++        return s;
++    }
++    grpc::Status Renew(grpc::ServerContext* ctx,
++                       const v1::Command* in,
++                       v1::Lease* out) override {
++        auto j = std::make_shared<Job>();
++        j->operation = Operation::Renew;
++        j->command = *in;
++        auto s = run(ctx, j, in->timeout_ms());
++        *out = j->lease;
++        return s;
++    }
++    grpc::Status Apply(grpc::ServerContext* ctx,
++                       const v1::ApplyRequest* in,
++                       v1::State* out) override {
++        auto j = std::make_shared<Job>();
++        j->operation = Operation::Apply;
++        j->apply = *in;
++        j->command = in->command();
++        auto s = run(ctx, j, j->command.timeout_ms());
++        *out = j->state;
++        return s;
++    }
++    grpc::Status TimedPress(grpc::ServerContext* ctx,
++                            const v1::TimedPressRequest* in,
++                            v1::State* out) override {
++        auto j = std::make_shared<Job>();
++        j->operation = Operation::TimedPress;
++        j->press = *in;
++        j->command = in->command();
++        auto s = run(ctx, j, j->command.timeout_ms());
++        *out = j->state;
++        return s;
++    }
++    grpc::Status ReleaseAll(grpc::ServerContext* ctx,
++                            const v1::Command* in,
++                            v1::State* out) override {
++        return release(ctx, in, out, Operation::ReleaseAll);
++    }
++    grpc::Status Release(grpc::ServerContext* ctx,
++                         const v1::Command* in,
++                         v1::State* out) override {
++        return release(ctx, in, out, Operation::Release);
++    }
++    grpc::Status release(grpc::ServerContext* ctx,
++                         const v1::Command* in,
++                         v1::State* out,
++                         Operation op) {
++        auto j = std::make_shared<Job>();
++        j->operation = op;
++        j->command = *in;
++        auto s = run(ctx, j, in->timeout_ms());
++        *out = j->state;
++        return s;
++    }
++};
++grpc::Service* createService() {
++    return new Service;
++}
++}  // namespace automation
++}  // namespace pico
+diff --git a/android/android-grpc/services/pico-automation/PicoAutomationService.h b/android/android-grpc/services/pico-automation/PicoAutomationService.h
+new file mode 100644
+index 00000000..1a2b65e1
+--- /dev/null
++++ b/android/android-grpc/services/pico-automation/PicoAutomationService.h
+@@ -0,0 +1,41 @@
++// Copyright 2026 Koma Studios. Licensed under the Apache License, Version 2.0.
++#pragma once
++#include <chrono>
++#include <condition_variable>
++#include <functional>
++#include <memory>
++#include <mutex>
++#include "pico_automation.grpc.pb.h"
++namespace pico {
++namespace automation {
++using Clock = std::chrono::steady_clock;
++enum class Operation {
++    State,
++    Acquire,
++    Renew,
++    Apply,
++    TimedPress,
++    ReleaseAll,
++    Release
++};
++struct Job {
++    Operation operation;
++    v1::AcquireRequest acquire;
++    v1::Command command;
++    v1::ApplyRequest apply;
++    v1::TimedPressRequest press;
++    v1::State state;
++    v1::Lease lease;
++    Clock::time_point deadline;
++    std::mutex mutex;
++    std::condition_variable cv;
++    bool finished = false;
++    bool canceled = false;
++    grpc::Status status;
++};
++using Dispatcher = std::function<void(std::shared_ptr<Job>)>;
++void setDispatcher(Dispatcher dispatcher);
++grpc::Service* createService();
++bool supportedKey(unsigned key);
++}  // namespace automation
++}  // namespace pico
+diff --git a/android/android-grpc/services/pico-automation/proto/pico_automation.proto b/android/android-grpc/services/pico-automation/proto/pico_automation.proto
+new file mode 100644
+index 00000000..ac1f6758
+--- /dev/null
++++ b/android/android-grpc/services/pico-automation/proto/pico_automation.proto
+@@ -0,0 +1,88 @@
++syntax = "proto3";
++package pico.automation.v1;
++import "google/protobuf/empty.proto";
++
++// Served on the emulator's existing authenticated gRPC endpoint.
++service PicoAutomation {
++  rpc GetCapabilities(google.protobuf.Empty) returns (Capabilities);
++  rpc GetState(google.protobuf.Empty) returns (State);
++  rpc Acquire(AcquireRequest) returns (Lease);
++  rpc Renew(Command) returns (Lease);
++  rpc Apply(ApplyRequest) returns (State);
++  rpc TimedPress(TimedPressRequest) returns (State);
++  // Exact retry of last successful ReleaseAll is a no-op only while the same
++  // lease is still owned, epoch/token match, and no later sequence succeeded.
++  rpc ReleaseAll(Command) returns (State);
++  // Exact retry of last successful Release is a no-op only while unowned and
++  // epoch/token/sequence match that release and no subsequent Acquire succeeded.
++  // Cleanup retries still require a valid timeout/deadline and ready pipes;
++  // they return current State without mutation or renewal. Never release a new owner.
++  rpc Release(Command) returns (State);
++}
++message Capabilities {
++  uint32 api_version = 1;
++  uint32 lease_ms = 2;
++  uint32 max_timeout_ms = 3;
++  bool native_xr = 4;
++  bool guest_keyboard = 5;
++  bool independent_hands = 6;
++  bool disconnect = 7;
++  repeated uint32 supported_linux_key_codes = 8;
++}
++// input_epoch is opaque and changes on PICO service-start/pipe loss/reconnect.
++message AcquireRequest { string input_epoch = 1; uint32 timeout_ms = 2; }
++message Command {
++  string input_epoch = 1;
++  string lease_token = 2;
++  // Strictly increasing except the exact successful cleanup retries above.
++  uint64 sequence = 3;
++  uint32 timeout_ms = 4;
++}
++message Lease { string input_epoch = 1; string lease_token = 2; uint32 remaining_ms = 3; }
++message Vec3 { double x = 1; double y = 2; double z = 3; }
++message Quaternion { double x = 1; double y = 2; double z = 3; double w = 4; }
++// Metres; +X right, +Y up, -Z forward; unit quaternion xyzw.
++message Pose { Vec3 position = 1; Quaternion orientation = 2; }
++enum Hand { HAND_UNSPECIFIED = 0; LEFT = 1; RIGHT = 2; }
++enum Connection { CONNECTION_UNCHANGED = 0; CONNECT_LEFT = 1; CONNECT_RIGHT = 2; CONNECT_BOTH = 3; }
++enum Button {
++  BUTTON_UNSPECIFIED = 0;
++  HOME = 1; APP = 2; AX = 3; BY = 4; GRIP = 5; STICK = 6; TRIGGER = 7;
++  TOUCH_AX = 8; TOUCH_BY = 9; TOUCH_STICK = 10; TOUCH_TRIGGER = 11; TOUCH_THUMBREST = 12;
++}
++// Presence replaces this hand's controls; omitted pose preserves its pose.
++message HandState {
++  Pose pose = 1;
++  double stick_x = 2; double stick_y = 3; // [-1,1]
++  double trigger = 4; double grip = 5; // [0,1]
++  repeated Button buttons_down = 6;
++}
++// Linux evdev codes, NOT Android keycodes or Qt keys. Entire held-key set.
++// Capability whitelist is authoritative. Injection bypasses Qt shortcuts.
++message KeyboardState { repeated uint32 linux_key_codes_down = 1; }
++message ApplyRequest {
++  Command command = 1;
++  Pose hmd = 2;
++  HandState left = 3;
++  HandState right = 4;
++  KeyboardState keyboard = 5;
++  Connection connection = 6;
++}
++message HandButton { Hand hand = 1; Button button = 2; }
++message TimedPressRequest {
++  Command command = 1;
++  uint32 duration_ms = 2;
++  oneof control { HandButton hand_button = 3; uint32 linux_key_code = 4; }
++}
++message State {
++  string input_epoch = 1;
++  bool ready = 2;
++  bool automation_owned = 3;
++  uint32 lease_remaining_ms = 4;
++  uint64 last_sequence = 5;
++  Pose hmd = 6;
++  HandState left = 7;
++  HandState right = 8;
++  KeyboardState keyboard = 9;
++  Connection connection = 10; // Requested selection; not a guest acknowledgment.
++}
+diff --git a/android/android-ui/modules/aemu-ui-qt/CMakeLists.txt b/android/android-ui/modules/aemu-ui-qt/CMakeLists.txt
+index 3452d9a7..abf92c74 100644
+--- a/android/android-ui/modules/aemu-ui-qt/CMakeLists.txt
++++ b/android/android-ui/modules/aemu-ui-qt/CMakeLists.txt
+@@ -69,12 +69,13 @@ android_qt_lib(
+       android/skin/qt/pico-hmd-simulator.cpp
+       android/skin/qt/pico-emulator-overlay.cpp
+       android/skin/qt/pico-ui-command-handle.cpp
++      android/skin/qt/pico-automation.cpp
+       android/skin/qt/emulator-scene-window.ui
+       android/skin/qt/emulator-scene-window.cpp
+       android/skin/qt/screenshot-window.cpp
+       android/skin/qt/screenshot-window.ui
+       android/skin/qt/emulator-test-server.cpp
+-      DEPS aemu-ui-car-property-utils
++      DEPS pico-automation-server aemu-ui-car-property-utils
+        aemu-ui-headless
+        aemu-ui-qt-base
+        aemu::recording
+diff --git a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/emulator-qt-window.cpp b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/emulator-qt-window.cpp
+index 8d96649b..878caa99 100644
+--- a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/emulator-qt-window.cpp
++++ b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/emulator-qt-window.cpp
+@@ -1495,6 +1495,7 @@ void EmulatorQtWindow::dropEvent(QDropEvent* event) {
+ }
+ 
+ void EmulatorQtWindow::keyPressEvent(QKeyEvent* event) {
++    if (mPicoUiCommandHandle && mPicoUiCommandHandle->automationOwned()) return;
+ #ifdef __APPLE__
+     if(m_nKeyMap.contains(event->key())) {
+         QKeyEvent ne(event->type(), m_nKeyMap[event->key()].first,
+@@ -1516,6 +1517,7 @@ void EmulatorQtWindow::keyPressEvent(QKeyEvent* event) {
+ }
+ 
+ void EmulatorQtWindow::keyReleaseEvent(QKeyEvent* event) {
++    if (mPicoUiCommandHandle && mPicoUiCommandHandle->automationOwned()) return;
+ #ifdef __APPLE__
+     if(m_nKeyMap.contains(event->key())) {
+         QKeyEvent ne(event->type(), m_nKeyMap[event->key()].first,
+@@ -1549,6 +1551,7 @@ void EmulatorQtWindow::setRelativeMouseCoordMode(bool state) {
+ }
+ 
+ void EmulatorQtWindow::mouseMoveEvent(QMouseEvent* event) {
++    if (mPicoUiCommandHandle && mPicoUiCommandHandle->automationOwned()) return;
+     // The motion event will interfere with the swipe gesture being synthesized.
+     if (mWheelScrollTimer.isActive())
+         return;
+@@ -1651,6 +1654,7 @@ void EmulatorQtWindow::leaveEvent(QEvent* event) {
+ }
+ 
+ void EmulatorQtWindow::mousePressEvent(QMouseEvent* event) {
++    if (mPicoUiCommandHandle && mPicoUiCommandHandle->automationOwned()) return;
+     this->raise();
+     mPicoUiCommandHandle->handleQtMouseEvent(event);
+ 
+@@ -1720,6 +1724,7 @@ void EmulatorQtWindow::mousePressEvent(QMouseEvent* event) {
+ }
+ 
+ void EmulatorQtWindow::mouseReleaseEvent(QMouseEvent* event) {
++    if (mPicoUiCommandHandle && mPicoUiCommandHandle->automationOwned()) return;
+     mPicoUiCommandHandle->handleQtMouseEvent(event);
+ 
+     // Pen long press generates synthesized mouse events,
+@@ -3228,6 +3233,7 @@ void EmulatorQtWindow::forwardKeyEventToEmulator(SkinEventType type,
+ }
+ 
+ void EmulatorQtWindow::handleKeyEvent(SkinEventType type, const QKeyEvent& event) {
++    if (mPicoUiCommandHandle && mPicoUiCommandHandle->automationOwned()) return;
+     // When Ctrl+V is pressed, we send a paste event to the guest.
+     if (event.key() == Qt::Key_V && event.modifiers() == Qt::ControlModifier &&
+         type == kEventKeyDown) {
+@@ -3799,6 +3805,7 @@ public:
+ };
+ 
+ void EmulatorQtWindow::wheelEvent(QWheelEvent* event) {
++    if (mPicoUiCommandHandle && mPicoUiCommandHandle->automationOwned()) return;
+     if (mIgnoreWheelEvent) {
+         event->ignore();
+         return;
+@@ -3878,6 +3885,7 @@ void EmulatorQtWindow::wheelEvent(QWheelEvent* event) {
+ }
+ 
+ void EmulatorQtWindow::wheelScrollTimeout() {
++    if (mPicoUiCommandHandle && mPicoUiCommandHandle->automationOwned()) return;
+     mSwipeGesture->tick();
+ 
+     handleMouseEvent(kEventMouseMotion, kMouseButtonLeft,
+diff --git a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-automation.cpp b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-automation.cpp
+new file mode 100644
+index 00000000..0e1a40d8
+--- /dev/null
++++ b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-automation.cpp
+@@ -0,0 +1,505 @@
++// Copyright 2026 Koma Studios. Licensed under the Apache License, Version 2.0.
++#include "android/skin/qt/pico-automation.h"
++#include <QApplication>
++#include <QDateTime>
++#include <QUuid>
++#include <cmath>
++#include <set>
++#include "AutomationPolicy.h"
++#include "android/console.h"
++#include "android/skin/qt/pico-controller-simulator.h"
++#include "android/skin/qt/pico-hmd-simulator.h"
++#include "android/skin/qt/pico-ui-command-handle.h"
++using namespace pico::automation;
++namespace p = pico::automation::v1;
++namespace {
++struct Frame {
++    uint64_t epoch;
++    Frame() : epoch(getConsoleAgents()->picopipe->beginInputFrame()) {}
++    ~Frame() { getConsoleAgents()->picopipe->endInputFrame(); }
++};
++std::string uuid() {
++    return QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
++}
++unsigned remaining(Clock::time_point d) {
++    auto n = std::chrono::duration_cast<std::chrono::milliseconds>(d -
++                                                                   Clock::now())
++                     .count();
++    return n > 0 ? static_cast<unsigned>(n) : 0;
++}
++void poseToProto(const QVector3D& v, const QQuaternion& r, p::Pose* out) {
++    out->mutable_position()->set_x(v.x());
++    out->mutable_position()->set_y(v.y());
++    out->mutable_position()->set_z(v.z());
++    out->mutable_orientation()->set_x(r.x());
++    out->mutable_orientation()->set_y(r.y());
++    out->mutable_orientation()->set_z(r.z());
++    out->mutable_orientation()->set_w(r.scalar());
++}
++QVector3D position(const p::Pose& p) {
++    return {float(p.position().x()), float(p.position().y()),
++            float(p.position().z())};
++}
++QQuaternion rotation(const p::Pose& p) {
++    return QQuaternion(float(p.orientation().w()), float(p.orientation().x()),
++                       float(p.orientation().y()), float(p.orientation().z()))
++            .normalized();
++}
++bool validPose(const p::Pose& p) {
++    if (!p.has_position() || !p.has_orientation())
++        return false;
++    for (double x : {p.position().x(), p.position().y(), p.position().z()})
++        if (!std::isfinite(x) || std::abs(x) > 100000)
++            return false;
++    auto r = p.orientation();
++    double n = r.x() * r.x() + r.y() * r.y() + r.z() * r.z() + r.w() * r.w();
++    return std::isfinite(n) && std::abs(n - 1) < 0.001;
++}
++bool pressed(const p::HandState& h, int b) {
++    for (int x : h.buttons_down())
++        if (x == b)
++            return true;
++    return false;
++}
++bool validHand(const p::HandState& h) {
++    if (h.has_pose() && !validPose(h.pose()))
++        return false;
++    for (double x : {h.stick_x(), h.stick_y()})
++        if (!std::isfinite(x) || std::abs(x) > 1)
++            return false;
++    for (double x : {h.trigger(), h.grip()})
++        if (!std::isfinite(x) || x < 0 || x > 1)
++            return false;
++    std::set<int> seen;
++    for (int b : h.buttons_down())
++        if (b < 1 || b > 12 || !seen.insert(b).second)
++            return false;
++    // Analog values and digital click state are independent, as on real XR
++    // controllers.
++    return true;
++}
++bool validKeys(const p::KeyboardState& k) {
++    std::set<unsigned> seen;
++    for (unsigned x : k.linux_key_codes_down())
++        if (!supportedKey(x) || !seen.insert(x).second)
++            return false;
++    return true;
++}
++const int keycode[] = {-1, 0, 1, 2, 3, 4, 5, 17, 10, 11, 12, 13, 14};
++void changeButton(p::HandState* h, int b, bool down) {
++    std::set<int> values(h->buttons_down().begin(), h->buttons_down().end());
++    if (down)
++        values.insert(b);
++    else
++        values.erase(b);
++    h->clear_buttons_down();
++    for (int x : values)
++        h->add_buttons_down(static_cast<p::Button>(x));
++    if (b == p::TRIGGER)
++        h->set_trigger(down ? 1 : 0);
++    if (b == p::GRIP)
++        h->set_grip(down ? 1 : 0);
++}
++}  // namespace
++PicoAutomation::PicoAutomation(PicoUiCommandHandle* owner)
++    : QObject(owner), mOwner(owner), mEpochPrefix(uuid()) {
++    qApp->installEventFilter(this);
++    setDispatcher([this](std::shared_ptr<Job> job) {
++        QMetaObject::invokeMethod(
++                this, [this, job]() { execute(job); }, Qt::QueuedConnection);
++    });
++    mTimer.setTimerType(Qt::PreciseTimer);
++    mTimer.setInterval(5);
++    connect(&mTimer, &QTimer::timeout, this, [this]() { tick(); });
++    mTimer.start();
++    Frame f;
++    synchronize(f.epoch);
++}
++PicoAutomation::~PicoAutomation() {
++    setDispatcher({});
++    mTimer.stop();
++    Frame f;
++    neutralize(true);
++}
++bool PicoAutomation::eventFilter(QObject*, QEvent* event) {
++    if (!owned())
++        return false;
++    switch (event->type()) {
++        case QEvent::KeyPress:
++        case QEvent::KeyRelease:
++        case QEvent::Shortcut:
++        case QEvent::ShortcutOverride:
++        case QEvent::MouseButtonPress:
++        case QEvent::MouseButtonRelease:
++        case QEvent::MouseButtonDblClick:
++        case QEvent::MouseMove:
++        case QEvent::Wheel:
++        case QEvent::Gesture:
++        case QEvent::TouchBegin:
++        case QEvent::TouchUpdate:
++        case QEvent::TouchEnd:
++            return true;
++        default:
++            return false;
++    }
++}
++void PicoAutomation::serviceStarted() {
++    Frame f;
++    synchronize(f.epoch);
++}
++void PicoAutomation::synchronize(uint64_t epoch) {
++    if (epoch != mPipeEpoch) {
++        // Queued UP may have been lost after Release already cleared the token.
++        // Keep recovery pending across closed pipes, independently of ownership.
++        mPendingNeutralBaseline = true;
++        neutralize(true);
++        ++mOwner->controllerSimulator()->mUiGeneration;
++        mPipeEpoch = epoch;
++        mEpoch = mEpochPrefix + ":" + std::to_string(epoch);
++        mSequence = 0;
++        mReleasedToken.clear();
++        mReleaseAllSequence = 0;
++    }
++    if (mPendingNeutralBaseline && getConsoleAgents()->picopipe->inputReady()) {
++        neutralize(true, true);
++        mPendingNeutralBaseline = false;
++    }
++    if (owned() && Clock::now() >= mLeaseDeadline)
++        neutralize(true);
++}
++void PicoAutomation::tick() {
++    Frame f;
++    synchronize(f.epoch);
++    expirePresses();
++}
++void PicoAutomation::snapshot(p::State& out) {
++    mState.set_input_epoch(mEpoch);
++    mState.set_ready(getConsoleAgents()->picopipe->inputReady());
++    mState.set_automation_owned(owned());
++    mState.set_lease_remaining_ms(owned() ? remaining(mLeaseDeadline) : 0);
++    mState.set_last_sequence(mSequence);
++    auto h = mOwner->hmdSimulator();
++    poseToProto(h->mHmdPosition, h->mHmdRotation, mState.mutable_hmd());
++    auto c = mOwner->controllerSimulator();
++    for (int hand = 0; hand < 2; ++hand) {
++        auto value = hand == 0 ? mState.mutable_left() : mState.mutable_right();
++        value->clear_buttons_down();
++        for (int b = 1; b <= 12; ++b)
++            if (c->mInputControls[hand][keycode[b]])
++                value->add_buttons_down(static_cast<p::Button>(b));
++        value->set_trigger(c->mInputControls[hand][6] / 255.0);
++        value->set_grip(c->mInputControls[hand][7] / 255.0);
++        auto axis = [](int x) {
++            return x < 128 ? (x - 128) / 128.0 : (x - 128) / 127.0;
++        };
++        value->set_stick_x(axis(c->mInputControls[hand][15]));
++        value->set_stick_y(axis(c->mInputControls[hand][16]));
++        const auto& p = c->mIndependentStates[hand].pose;
++        poseToProto(QVector3D(p.x, p.y, p.z),
++                    QQuaternion(p.rw, p.rx, p.ry, p.rz),
++                    (hand == 0 ? mState.mutable_left() : mState.mutable_right())
++                            ->mutable_pose());
++    }
++    out = mState;
++}
++void PicoAutomation::sendControls(int hand,
++                                  const p::HandState& h,
++                                  bool forceNeutral) {
++    auto c = mOwner->controllerSimulator();
++    auto send = [&](int code, int value) {
++        // Cache equality does not prove the guest consumed the prior release.
++        bool force =
++                forceNeutral && (code > 1 || c->mTouchedControls[hand][code]);
++        if (force || c->mInputControls[hand][code] != value)
++            c->sendControllerKeyToGuest(hand, code, value);
++    };
++    for (int b = 1; b <= 12; ++b)
++        send(keycode[b], pressed(h, b) ? 1 : 0);
++    // Send analog last: legacy click helper expands trigger/grip to endpoint
++    // values.
++    send(6, std::lround(h.trigger() * 255));
++    send(7, std::lround(h.grip() * 255));
++    auto axis = [](double x) {
++        return x < 0 ? int(std::lround(128 + x * 128))
++                     : int(std::lround(128 + x * 127));
++    };
++    send(15, axis(h.stick_x()));
++    send(16, axis(h.stick_y()));
++}
++void PicoAutomation::setKeyboard(const p::KeyboardState& value) {
++    std::set<unsigned> old(mState.keyboard().linux_key_codes_down().begin(),
++                           mState.keyboard().linux_key_codes_down().end());
++    std::set<unsigned> next(value.linux_key_codes_down().begin(),
++                            value.linux_key_codes_down().end());
++    for (unsigned k : old)
++        if (!next.count(k))
++            getConsoleAgents()->user_event->sendKey(k, false);
++    for (unsigned k : next)
++        if (!old.count(k))
++            getConsoleAgents()->user_event->sendKey(k, true);
++    *mState.mutable_keyboard() = value;
++}
++void PicoAutomation::neutralize(bool release, bool forceBaseline) {
++    mPresses.clear();
++    if (owned() || forceBaseline) {
++        getConsoleAgents()->picopipe->clearInputQueue();
++        p::HandState zero;
++        sendControls(0, zero, true);
++        sendControls(1, zero, true);
++        setKeyboard(p::KeyboardState{});
++        mState.mutable_left()->Clear();
++        mState.mutable_right()->Clear();
++        auto h = mOwner->hmdSimulator();
++        h->mPressedKeys.clear();
++        h->mMovementTimer->stop();
++        h->mPressedModifier = Qt::NoModifier;
++        h->mHmdState = {};
++        h->mLastHmdState = {};
++        h->mGestureSensitivity = 0;
++        h->mWheelSensitivity = 0;
++        h->mTouchpadInput = {};
++        auto c = mOwner->controllerSimulator();
++        c->mPressedKeys.clear();
++        ++c->mUiGeneration;
++        // Preserve each pose while clearing motion derivatives.
++        for (auto& state : c->mIndependentStates) {
++            auto pose = state.pose;
++            state = {};
++            state.pose = pose;
++        }
++    }
++    if (release)
++        mToken.clear();
++}
++void PicoAutomation::cancelPresses(int hand) {
++    for (auto it = mPresses.begin(); it != mPresses.end();) {
++        if ((hand == 2 && it->first >= 1000) ||
++            (hand < 2 && it->first / 100 == hand))
++            it = mPresses.erase(it);
++        else
++            ++it;
++    }
++}
++void PicoAutomation::expirePresses() {
++    if (!owned())
++        return;
++    for (auto it = mPresses.begin(); it != mPresses.end();) {
++        if (Clock::now() < it->second) {
++            ++it;
++            continue;
++        }
++        int key = it->first;
++        it = mPresses.erase(it);
++        if (key >= 1000) {
++            p::KeyboardState k;
++            for (unsigned v : mState.keyboard().linux_key_codes_down())
++                if (v != unsigned(key - 1000))
++                    k.add_linux_key_codes_down(v);
++            setKeyboard(k);
++        } else {
++            int hand = key / 100, b = key % 100;
++            auto h = hand == 0 ? mState.mutable_left() : mState.mutable_right();
++            changeButton(h, b, false);
++            sendControls(hand, *h);
++        }
++    }
++}
++void PicoAutomation::execute(std::shared_ptr<Job> j) {
++    std::lock_guard<std::mutex> lock(j->mutex);
++    Frame frame;
++    synchronize(frame.epoch);
++    expirePresses();
++    auto fail = [&](grpc::StatusCode code, const char* message) {
++        j->status = {code, message};
++    };
++    auto perform = [&]() {
++        if (j->canceled || Clock::now() >= j->deadline) {
++            fail(grpc::StatusCode::DEADLINE_EXCEEDED,
++                 "command expired on Qt thread");
++            return;
++        }
++        if (j->operation == Operation::State) {
++            snapshot(j->state);
++            return;
++        }
++        if (!getConsoleAgents()->picopipe->inputReady()) {
++            fail(grpc::StatusCode::FAILED_PRECONDITION,
++                 "PICO input pipes unavailable");
++            return;
++        }
++        if (j->operation == Operation::Acquire) {
++            if (j->acquire.input_epoch() != mEpoch) {
++                fail(grpc::StatusCode::FAILED_PRECONDITION,
++                     "input epoch changed");
++                return;
++            }
++            if (owned()) {
++                fail(grpc::StatusCode::RESOURCE_EXHAUSTED,
++                     "automation already leased");
++                return;
++            }
++            // Quiesce UI key/movement state before transferring ownership.
++            QEvent leave(QEvent::Leave);
++            mOwner->handleQtLeaveEvent(&leave);
++            auto c = mOwner->controllerSimulator();
++            ++c->mUiGeneration;
++            c->mIndependentPoses = true;
++            mToken = uuid();
++            mReleasedToken.clear();
++            mReleaseAllSequence = 0;
++            mSequence = 0;
++            mLeaseDeadline = Clock::now() + std::chrono::milliseconds(5000);
++            neutralize(false);
++        } else {
++            const auto& cmd = j->command;
++            // Retry of the last cleanup is a no-op only for the same
++            // epoch/owner.
++            if (cmd.input_epoch() == mEpoch &&
++                ((j->operation == Operation::Release && !owned() &&
++                  !mReleasedToken.empty() &&
++                  cmd.lease_token() == mReleasedToken &&
++                  cmd.sequence() == mReleasedSequence) ||
++                 (j->operation == Operation::ReleaseAll && owned() &&
++                  mReleaseAllSequence != 0 &&
++                  cmd.lease_token() == mToken && cmd.sequence() == mSequence &&
++                  mSequence == mReleaseAllSequence))) {
++                snapshot(j->state);
++                return;
++            }
++            switch (checkCommand(mEpoch, cmd.input_epoch(), mToken,
++                                 cmd.lease_token(), mSequence, cmd.sequence(),
++                                 Clock::now(), j->deadline, mLeaseDeadline)) {
++                case Rejection::Deadline:
++                    fail(grpc::StatusCode::DEADLINE_EXCEEDED,
++                         "expired command");
++                    return;
++                case Rejection::Epoch:
++                    fail(grpc::StatusCode::FAILED_PRECONDITION,
++                         "input epoch changed");
++                    return;
++                case Rejection::Token:
++                    fail(grpc::StatusCode::PERMISSION_DENIED,
++                         "lease invalid or expired");
++                    return;
++                case Rejection::Sequence:
++                    fail(grpc::StatusCode::ABORTED, "sequence must increase");
++                    return;
++                case Rejection::None:
++                    break;
++            }
++            if ((j->operation == Operation::Apply ||
++                 j->operation == Operation::TimedPress) &&
++                !getConsoleAgents()->picopipe->inputCapacity()) {
++                fail(grpc::StatusCode::RESOURCE_EXHAUSTED,
++                     "guest control queue is full");
++                return;
++            }
++            if (j->operation == Operation::Apply) {
++                const auto& a = j->apply;
++                if ((a.has_hmd() && !validPose(a.hmd())) ||
++                    (a.has_left() && !validHand(a.left())) ||
++                    (a.has_right() && !validHand(a.right())) ||
++                    (a.has_keyboard() && !validKeys(a.keyboard())) ||
++                    a.connection() < 0 || a.connection() > 3) {
++                    fail(grpc::StatusCode::INVALID_ARGUMENT,
++                         "invalid pose, controls, keyboard or connection");
++                    return;
++                }
++                if (a.has_hmd()) {
++                    auto h = mOwner->hmdSimulator();
++                    h->mHmdPosition = position(a.hmd());
++                    h->mHmdRotation = rotation(a.hmd());
++                    h->updateDirectionVectors();
++                    h->resetHelperVariables();
++                }
++                for (int hand = 0; hand < 2; ++hand) {
++                    if (hand == 0 ? !a.has_left() : !a.has_right())
++                        continue;
++                    const auto& value = hand == 0 ? a.left() : a.right();
++                    cancelPresses(hand);
++                    if (value.has_pose())
++                        mOwner->controllerSimulator()->setIndependentPose(
++                                hand, position(value.pose()),
++                                rotation(value.pose()));
++                    *(hand == 0 ? mState.mutable_left()
++                                : mState.mutable_right()) = value;
++                    sendControls(hand, value);
++                }
++                if (a.has_keyboard()) {
++                    cancelPresses(2);
++                    setKeyboard(a.keyboard());
++                }
++                if (a.connection() != p::CONNECTION_UNCHANGED) {
++                    mOwner->controllerSimulator()->connectController(
++                            int(a.connection()) - 1);
++                    mState.set_connection(a.connection());
++                }
++                mOwner->hmdSimulator()->sendHmdPoseToGuest();
++            } else if (j->operation == Operation::TimedPress) {
++                auto& req = j->press;
++                int key;
++                if (!req.duration_ms() || req.duration_ms() > 5000) {
++                    fail(grpc::StatusCode::INVALID_ARGUMENT,
++                         "duration_ms must be 1..5000");
++                    return;
++                }
++                if (req.has_hand_button()) {
++                    int hand = req.hand_button().hand(),
++                        b = req.hand_button().button();
++                    if (hand < 1 || hand > 2 || b < 1 || b > 12) {
++                        fail(grpc::StatusCode::INVALID_ARGUMENT,
++                             "invalid hand button");
++                        return;
++                    }
++                    --hand;
++                    key = hand * 100 + b;
++                    auto h = hand == 0 ? mState.mutable_left()
++                                       : mState.mutable_right();
++                    if (pressed(*h, b)) {
++                        fail(grpc::StatusCode::FAILED_PRECONDITION,
++                             "control already held");
++                        return;
++                    }
++                    changeButton(h, b, true);
++                    sendControls(hand, *h);
++                } else if (req.control_case() ==
++                                   p::TimedPressRequest::kLinuxKeyCode &&
++                           supportedKey(req.linux_key_code())) {
++                    key = 1000 + req.linux_key_code();
++                    auto k = mState.keyboard();
++                    for (unsigned v : k.linux_key_codes_down())
++                        if (v == req.linux_key_code()) {
++                            fail(grpc::StatusCode::FAILED_PRECONDITION,
++                                 "key already held");
++                            return;
++                        }
++                    k.add_linux_key_codes_down(req.linux_key_code());
++                    setKeyboard(k);
++                } else {
++                    fail(grpc::StatusCode::INVALID_ARGUMENT,
++                         "invalid timed control");
++                    return;
++                }
++                mPresses[key] = pressDeadline(Clock::now(), req.duration_ms(),
++                                              mLeaseDeadline);
++            } else if (j->operation == Operation::Renew) {
++                mLeaseDeadline = Clock::now() + std::chrono::milliseconds(5000);
++            } else {
++                if (j->operation == Operation::Release) {
++                    mReleasedToken = mToken;
++                    mReleasedSequence = cmd.sequence();
++                } else
++                    mReleaseAllSequence = cmd.sequence();
++                neutralize(j->operation == Operation::Release);
++            }
++            mSequence = cmd.sequence();
++        }
++        j->lease.set_input_epoch(mEpoch);
++        j->lease.set_lease_token(mToken);
++        j->lease.set_remaining_ms(owned() ? remaining(mLeaseDeadline) : 0);
++        snapshot(j->state);
++    };
++    perform();
++    j->finished = true;
++    j->cv.notify_all();
++}
+diff --git a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-automation.h b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-automation.h
+new file mode 100644
+index 00000000..f95ead73
+--- /dev/null
++++ b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-automation.h
+@@ -0,0 +1,40 @@
++// Copyright 2026 Koma Studios. Licensed under the Apache License, Version 2.0.
++#pragma once
++#include <QObject>
++#include <QTimer>
++#include <map>
++#include "PicoAutomationService.h"
++class PicoUiCommandHandle;
++class PicoAutomation final : public QObject {
++public:
++    explicit PicoAutomation(PicoUiCommandHandle* owner);
++    ~PicoAutomation();
++    bool owned() const { return !mToken.empty(); }
++    void serviceStarted();
++
++protected:
++    bool eventFilter(QObject*, QEvent*) override;
++
++private:
++    using Clock = pico::automation::Clock;
++    void execute(std::shared_ptr<pico::automation::Job> job);
++    void tick();
++    void synchronize(uint64_t epoch);
++    void neutralize(bool release, bool forceBaseline = false);
++    void snapshot(pico::automation::v1::State& out);
++    void sendControls(int hand,
++                      const pico::automation::v1::HandState& value,
++                      bool forceNeutral = false);
++    void setKeyboard(const pico::automation::v1::KeyboardState& value);
++    void expirePresses();
++    void cancelPresses(int hand);
++    PicoUiCommandHandle* mOwner;
++    QTimer mTimer;
++    std::string mEpochPrefix, mEpoch, mToken, mReleasedToken;
++    uint64_t mReleasedSequence = 0, mReleaseAllSequence = 0;
++    uint64_t mPipeEpoch = 0, mSequence = 0;
++    bool mPendingNeutralBaseline = false;
++    Clock::time_point mLeaseDeadline;
++    pico::automation::v1::State mState;
++    std::map<int, Clock::time_point> mPresses;
++};
+diff --git a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-controller-simulator.cpp b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-controller-simulator.cpp
+index 06487ff5..4ec38a3d 100644
+--- a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-controller-simulator.cpp
++++ b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-controller-simulator.cpp
+@@ -105,6 +105,8 @@ PicoControllerSimulator::PicoControllerSimulator(
+     }
+     mKeyMappingFilePath =
+             avdPath + QString(Ui::Settings::PER_CONTROLLER_SETTINGS_NAME);
++    for (int i=0;i<2;++i) { mIndependentStates[i].pose.type=i+1; mIndependentStates[i].pose.rw=1; }
++    for (auto& controls : mInputControls) { controls[15]=128; controls[16]=128; }
+     readKeyMap();
+     readRayOffset();
+ }
+@@ -137,6 +139,7 @@ void PicoControllerSimulator::handleQtLeaveEvent(QEvent* event) {
+ }
+ 
+ void PicoControllerSimulator::handleQtMouseEvent(QMouseEvent* event) {
++    mIndependentPoses = false;
+     mLastMousePos = event->pos();
+ 
+     auto operationMode = mCommandHandle->hmdSimulator()->currentOperationMode();
+@@ -165,7 +168,7 @@ void PicoControllerSimulator::forwardControllerKey(int32_t handle,
+ void PicoControllerSimulator::connectController(int32_t handle) {
+     D("%s: handle %d\n", __func__, handle);
+ 
+-    HostCommand hostCmd;
++    HostCommand hostCmd{};
+     if (handle == kLeftHandle) {
+         hostCmd.type = HostCommandType::CONNECT_LEFT_CONTROLLER;
+     } else if (handle == kRightHandle) {
+@@ -185,7 +188,8 @@ void PicoControllerSimulator::resetLocalTransform() {
+     sendControllerKeyToGuest(static_cast<int32_t>(hand),
+                              static_cast<int32_t>(HookkeyType::HOOKKEY_HOME),
+                              1);
+-    QTimer::singleShot(700, this, [this, hand]() {
++    QTimer::singleShot(700, this, [this, hand, generation=mUiGeneration]() {
++        if (generation != mUiGeneration) return;
+         sendControllerKeyToGuest(
+                 static_cast<int32_t>(hand),
+                 static_cast<int32_t>(HookkeyType::HOOKKEY_HOME), 0);
+@@ -193,6 +197,7 @@ void PicoControllerSimulator::resetLocalTransform() {
+ }
+ 
+ void PicoControllerSimulator::resetControllerPose() {
++    if (mIndependentPoses) { sendIndependentPoses(); return; }
+     mControllerPosition = mCommandHandle->hmdSimulator()->cameraPosition();
+     rotateControllerRay(mLastMousePos);
+ }
+@@ -216,7 +221,8 @@ void PicoControllerSimulator::handleLeftMouseEvent(QMouseEvent* event) {
+             sendControllerKeyToGuest(static_cast<int32_t>(hand), 17, 0);
+         } else {
+             // this event comes from the system's automatic synthesis
+-            QTimer::singleShot(50, this, [this, hand]() {
++            QTimer::singleShot(50, this, [this, hand, generation=mUiGeneration]() {
++        if (generation != mUiGeneration) return;
+                 sendControllerKeyToGuest(static_cast<int32_t>(hand), 17, 0);
+             });
+         }
+@@ -302,13 +308,18 @@ void PicoControllerSimulator::sendControllerPoseToGuest(int32_t handle) {
+             sizeof(mControllerState));
+     // record history state
+     mLastControllerState = mControllerState;
++    mIndependentStates[handle] = mControllerState;
+ }
+ 
+ void PicoControllerSimulator::sendControllerKeyToGuest(int32_t handle,
+                                                        int32_t keycode,
+                                                        int32_t value) {
+     D("%s: handle %d keycode %d value %d\n", __func__, handle, keycode, value);
+-    static ControllerKey mControllerKey;
++    ControllerKey mControllerKey{};
++    if (handle < 0 || handle > 1) return;
++    if (keycode >= 0 && keycode < 18) { mInputControls[handle][keycode] = value; mTouchedControls[handle][keycode] = true; }
++    if (keycode == 17) mInputControls[handle][6] = value == 1 ? 255 : 0;
++    if (keycode == 4) mInputControls[handle][7] = value == 1 ? 255 : 0;
+     mControllerKey.handle = handle;
+     mControllerKey.keycode = keycode;
+     mControllerKey.value = value;
+@@ -364,6 +375,9 @@ void PicoControllerSimulator::sendControllerKeyToGuest(int32_t handle,
+ }
+ 
+ void PicoControllerSimulator::updateImuState() {
++    if (mLastControllerState.pose.timestamp == 0 || mControllerState.pose.timestamp <= mLastControllerState.pose.timestamp) {
++        auto pose = mControllerState.pose; mControllerState = {}; mControllerState.pose = pose; return;
++    }
+     // Calculate time delta in seconds
+     const double deltaSeconds = (mControllerState.pose.timestamp -
+                                  mLastControllerState.pose.timestamp) /
+@@ -675,3 +689,16 @@ void PicoControllerSimulator::readRayOffset() {
+                            : mHashRayOffset.insert(3, rVerRayOffset.toInt());
+     setting.endGroup();
+ }
++
++void PicoControllerSimulator::setIndependentPose(int hand, const QVector3D& p, const QQuaternion& r) {
++    mIndependentPoses=true;
++    auto& state=mIndependentStates[hand]; auto stamp=QDateTime::currentMSecsSinceEpoch();
++    // A submitted pose is a sample, not a velocity command. Hold it stationary.
++    state={}; state.pose={int64_t(hand+1), stamp, p.x(),p.y(),p.z(),r.scalar(),r.x(),r.y(),r.z()};
++}
++void PicoControllerSimulator::sendIndependentPoses() {
++    for(auto& state:mIndependentStates) {
++        state.pose.timestamp=QDateTime::currentMSecsSinceEpoch();
++        getConsoleAgents()->picopipe->sendGuestPicoemuContents("emusixdof",reinterpret_cast<const uint8_t*>(&state),sizeof(state));
++    }
++}
+diff --git a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-controller-simulator.h b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-controller-simulator.h
+index c840f599..a9c8f0aa 100644
+--- a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-controller-simulator.h
++++ b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-controller-simulator.h
+@@ -42,6 +42,7 @@ class PicoUiCommandHandle;
+ 
+ class PicoControllerSimulator : public QObject {
+     Q_OBJECT
++    friend class PicoAutomation;
+ public:
+     PicoControllerSimulator(EmulatorQtWindow* emulatorWindow,
+                             PicoUiCommandHandle* commandHandle,
+@@ -56,6 +57,9 @@ public:
+     void connectController(int32_t handle);
+     void resetControllerPose();
+     void resetLocalTransform();
++    void setIndependentPose(int hand, const QVector3D& p, const QQuaternion& r);
++    void sendIndependentPoses();
++    bool independentPoses() const { return mIndependentPoses; }
+ 
+ private:
+     void handleLeftMouseEvent(QMouseEvent* event);
+@@ -81,8 +85,13 @@ private:
+ 
+     QVector3D mControllerPosition;
+     QQuaternion mControllerOrientation;
+-    XrDeviceState mControllerState;
+-    XrDeviceState mLastControllerState;
++    XrDeviceState mControllerState{};
++    bool mIndependentPoses = false;
++    uint64_t mUiGeneration = 0;
++    XrDeviceState mIndependentStates[2]{};
++    int mInputControls[2][18]{};
++    bool mTouchedControls[2][18]{};
++    XrDeviceState mLastControllerState{};
+ 
+     // default joystick value: [0]left [1]right
+     QVector<int> controllerJoystickX = {128, 128};
+diff --git a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-hmd-simulator.cpp b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-hmd-simulator.cpp
+index 5855cd76..60946cf7 100644
+--- a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-hmd-simulator.cpp
++++ b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-hmd-simulator.cpp
+@@ -536,6 +536,9 @@ void PicoHMDSimulator::sendHmdPoseToGuest() {
+ }
+ 
+ void PicoHMDSimulator::updateImuState() {
++    if (mLastHmdState.pose.timestamp == 0 || mHmdState.pose.timestamp <= mLastHmdState.pose.timestamp) {
++        auto pose = mHmdState.pose; mHmdState = {}; mHmdState.pose = pose; return;
++    }
+     // Calculate time delta in seconds
+     const double deltaSeconds =
+             (mHmdState.pose.timestamp - mLastHmdState.pose.timestamp) / 1000.0;
+diff --git a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-hmd-simulator.h b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-hmd-simulator.h
+index 4c0a7116..a6902dd9 100644
+--- a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-hmd-simulator.h
++++ b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-hmd-simulator.h
+@@ -44,6 +44,7 @@ class PicoUiCommandHandle;
+ 
+ class PicoHMDSimulator : public QObject {
+     Q_OBJECT
++    friend class PicoAutomation;
+ public:
+     PicoHMDSimulator(EmulatorQtWindow* emulatorWindow,
+                      PicoUiCommandHandle* commandHandle,
+diff --git a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-ui-command-handle.cpp b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-ui-command-handle.cpp
+index a6a0aefe..6e355c99 100644
+--- a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-ui-command-handle.cpp
++++ b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-ui-command-handle.cpp
+@@ -20,6 +20,7 @@
+  * THE SOFTWARE.
+  */
+ #include "android/skin/qt/pico-ui-command-handle.h"
++#include "android/skin/qt/pico-automation.h"
+ 
+ #include "android/avd/info.h"
+ #include "android/avd/util.h"
+@@ -60,7 +61,8 @@ static void handleGuestToHostCommand(void* handle,
+                                      const uint8_t* buf,
+                                      size_t size) {
+     auto cmdHandle = static_cast<PicoUiCommandHandle*>(handle);
+-    GuestCommand guestCommand;
++    if (size < sizeof(GuestCommand)) return;
++    GuestCommand guestCommand{};
+     memcpy(&guestCommand, buf, sizeof(guestCommand));
+     guestCommand.type = ntohl(guestCommand.type);
+     emit cmdHandle->handleGuestCommand(guestCommand);
+@@ -81,6 +83,7 @@ PicoUiCommandHandle::PicoUiCommandHandle(EmulatorQtWindow* emulatorWindow,
+     mControllerSimulator =
+             new PicoControllerSimulator(mEmulatorWindow, this, this);
+     mEyeHandSimulator = new PicoEyeHandSimulator(mEmulatorWindow, this, this);
++    mAutomation = new PicoAutomation(this);
+ 
+     startedFromIDE = getConsoleAgents()
+                              ->settings->android_cmdLineOptions()
+@@ -92,6 +95,7 @@ PicoUiCommandHandle::PicoUiCommandHandle(EmulatorQtWindow* emulatorWindow,
+ }
+ 
+ PicoUiCommandHandle::~PicoUiCommandHandle() {
++    delete mAutomation; mAutomation=nullptr;
+     getConsoleAgents()->picopipe->setEnabled(false);
+     if (mControllerSimulator) {
+         delete mControllerSimulator;
+@@ -110,6 +114,7 @@ PicoUiCommandHandle::~PicoUiCommandHandle() {
+ void PicoUiCommandHandle::handleUICommand(QtUICommand cmd,
+                                           bool down,
+                                           std::string extra) {
++    if (automationOwned()) return;
+     switch (cmd) {
+         case QtUICommand::TOOL_HOME: {
+             backToHomePage(down);
+@@ -255,6 +260,7 @@ void PicoUiCommandHandle::handleUICommand(QtUICommand cmd,
+ }
+ 
+ void PicoUiCommandHandle::handleQtKeyEvent(QKeyEvent* event) {
++    if (automationOwned()) return;
+     // "Ctrl+R" and "command+R" is the shortcut key for resetCamera
+     if (event->type() == QEvent::KeyPress && event->key() == Qt::Key_R &&
+         event->modifiers() == Qt::ControlModifier) {
+@@ -279,6 +285,7 @@ void PicoUiCommandHandle::handleQtKeyEvent(QKeyEvent* event) {
+ }
+ 
+ void PicoUiCommandHandle::handleQtLeaveEvent(QEvent* event) {
++    if (automationOwned()) return;
+     mHMDSimulator->handleQtLeaveEvent(event);
+     if (mTrackingMode == TrackingMode::CONTROLLER_TRACKING) {
+         mControllerSimulator->handleQtLeaveEvent(event);
+@@ -288,6 +295,7 @@ void PicoUiCommandHandle::handleQtLeaveEvent(QEvent* event) {
+ }
+ 
+ void PicoUiCommandHandle::handleQtMouseEvent(QMouseEvent* event) {
++    if (automationOwned()) return;
+     mHMDSimulator->handleQtMouseEvent(event);
+     if (mTrackingMode == TrackingMode::CONTROLLER_TRACKING) {
+         mControllerSimulator->handleQtMouseEvent(event);
+@@ -297,10 +305,12 @@ void PicoUiCommandHandle::handleQtMouseEvent(QMouseEvent* event) {
+ }
+ 
+ void PicoUiCommandHandle::handleQtWheelEvent(QWheelEvent* event) {
++    if (automationOwned()) return;
+     mHMDSimulator->handleQtWheelEvent(event);
+ }
+ 
+ void PicoUiCommandHandle::handleGestureEvent(const QGestureEvent& event) {
++    if (automationOwned()) return;
+     mHMDSimulator->handleGestureEvent(event);
+ }
+ 
+@@ -318,8 +328,11 @@ PicoEyeHandSimulator* PicoUiCommandHandle::eyeHandSimulator() const {
+ 
+ void PicoUiCommandHandle::slot_handleGuestCommand(GuestCommand cmd) {
+     auto cmdType = static_cast<GuestCommandType>(cmd.type);
++    if (automationOwned() && cmdType != GuestCommandType::PICO_SERVICE_STARTED) return;
+     switch (cmdType) {
+         case GuestCommandType::PICO_SERVICE_STARTED: {
++            mAutomation->serviceStarted();
++            if (mControllerSimulator->independentPoses()) { resetTrackingMode(); break; }
+             D("GetGuestCmd: PICO_SERVICE_STARTED\n");
+             // init controller button status
+             mEmulatorWindow->bottomToolWindow()->initButtonsStatus();
+@@ -405,7 +418,7 @@ void PicoUiCommandHandle::setTrackingMode(TrackingMode mode) {
+ 
+     mTrackingMode = mode;
+     // set PICO OS tracking mode
+-    HostCommand hostCmd;
++    HostCommand hostCmd{};
+     if (mode == TrackingMode::EYE_HAND_TRACKING) {
+         // notify guest to start eye-hand tracking
+         hostCmd = {
+@@ -446,3 +459,5 @@ void PicoUiCommandHandle::runAdbCommand(const std::string& tag,
+             },
+             android::base::System::kInfinite);
+ }
++
++bool PicoUiCommandHandle::automationOwned() const { return mAutomation && mAutomation->owned(); }
+diff --git a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-ui-command-handle.h b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-ui-command-handle.h
+index edf0ff4a..05fd5e92 100644
+--- a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-ui-command-handle.h
++++ b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-ui-command-handle.h
+@@ -42,6 +42,7 @@ class EmulatorQtWindow;
+ class PicoControllerSimulator;
+ class PicoHMDSimulator;
+ class PicoEyeHandSimulator;
++class PicoAutomation;
+ 
+ class PicoUiCommandHandle : public QObject {
+     Q_OBJECT
+@@ -61,6 +62,7 @@ public:
+     void handleQtWheelEvent(QWheelEvent* event);
+     void handleGestureEvent(const QGestureEvent& event);
+ 
++    bool automationOwned() const;
+     bool isKeyboardInputOpen() { return keyboardInputOpen; }
+     bool isControllerKeyOpen() { return controllerKeyOpen; }
+     bool isStartedFromIDE() { return startedFromIDE; }
+@@ -93,6 +95,7 @@ private:
+     PicoEyeHandSimulator* mEyeHandSimulator;
+     PicoHMDSimulator* mHMDSimulator;
+ 
++    PicoAutomation* mAutomation = nullptr;
+     bool keyboardInputOpen = false;
+     bool controllerKeyOpen = false;
+     bool startedFromIDE = false;
+diff --git a/android/emu/agents/include/android/emulation/control/picoemu_agent.h b/android/emu/agents/include/android/emulation/control/picoemu_agent.h
+index d810fd54..a4ff5887 100644
+--- a/android/emu/agents/include/android/emulation/control/picoemu_agent.h
++++ b/android/emu/agents/include/android/emulation/control/picoemu_agent.h
+@@ -53,6 +53,11 @@ typedef struct QAndroidPicoemuAgent {
+     void (*sendGuestPicoemuContents)(const char* name,
+                                      const uint8_t* buf,
+                                      size_t len);
++    uint64_t (*beginInputFrame)();
++    void (*endInputFrame)();
++    bool (*inputReady)();
++    bool (*inputCapacity)();
++    void (*clearInputQueue)();
+ } QAndroidPicoemuAgent;
+ 
+ ANDROID_END_HEADER
+diff --git a/android/emu/hardware/CMakeLists.txt b/android/emu/hardware/CMakeLists.txt
+index e5d9d345..ae5c7349 100644
+--- a/android/emu/hardware/CMakeLists.txt
++++ b/android/emu/hardware/CMakeLists.txt
+@@ -75,6 +75,7 @@ android_add_test(
+       android/emulation/AndroidAsyncMessagePipe_unittest.cpp
+       android/emulation/DeviceContextRunner_unittest.cpp
+       android/emulation/VmLock_unittest.cpp
++      android/emulation/PicoemuPipe_unittest.cpp
+   DEPS android-emu
+        android-emu-agents
+        android-emu-base
+diff --git a/android/emu/hardware/include/android/emulation/PicoemuPipe.h b/android/emu/hardware/include/android/emulation/PicoemuPipe.h
+index f5cbec5a..433326b9 100644
+--- a/android/emu/hardware/include/android/emulation/PicoemuPipe.h
++++ b/android/emu/hardware/include/android/emulation/PicoemuPipe.h
+@@ -20,6 +20,7 @@
+  * THE SOFTWARE.
+  */
+ #pragma once
++#include <deque>
+ 
+ #include <cstddef>        // for size_t
+ #include <cstdint>        // for uint8_t, uint32_t
+@@ -115,14 +116,18 @@ private:
+         ReadWriteState* pickStateWithData();
+         void clearQueued();
+         bool hasData() const;
++        size_t pendingPackets() const;
+ 
+     private:
+         ReadWriteState* inProgress;
+         ReadWriteState* queued;
+         ReadWriteState states[2];  // the actual states storage
++        std::deque<std::vector<uint8_t>> pending;
+         mutable std::mutex lock;
+     };
+ 
++    friend class PicoemuPipeManager;
++    friend class PicoemuPipeQueueTest;
+     void wakeGuestIfNeeded();
+     void wakeGuestIfNeededLocked();
+ 
+@@ -149,6 +154,12 @@ public:
+                                          size_t len);
+     static PicoemuPipe* getPicoPipe(const char* service_name);
+     static void closePicoPipe(PicoemuPipe* pipe);
++    static uint64_t beginInputFrame();
++    static void endInputFrame();
++    static bool inputReady();
++    static bool inputCapacity();
++    static void invalidateInput();
++    static void clearInputQueue();
+     static void setEnabled(bool enabled);
+     static bool isEnabled();
+     static void registerGuestPicoemuCallback(
+@@ -161,7 +172,8 @@ public:
+ private:
+     static std::unordered_map<std::string, PicoemuPipe*> sPicoPipeMap;
+     static std::unordered_map<std::string, std::vector<uint8_t>> sPendingMap;
+-    static std::mutex sPicoPipeMapLock;
++    static std::recursive_mutex sPicoPipeMapLock;
++    static uint64_t sInputEpoch;
+     static std::unordered_map<std::string,
+                               std::vector<PicoemuPipe::GuestPicoemuCallback>>
+             sCallbackMap;
+diff --git a/android/emu/hardware/src/android/emulation/PicoemuPipe.cpp b/android/emu/hardware/src/android/emulation/PicoemuPipe.cpp
+index 1c26d9e2..42fc5db2 100644
+--- a/android/emu/hardware/src/android/emulation/PicoemuPipe.cpp
++++ b/android/emu/hardware/src/android/emulation/PicoemuPipe.cpp
+@@ -38,7 +38,8 @@ std::unordered_map<std::string, PicoemuPipe*> PicoemuPipeManager::sPicoPipeMap =
+         {};
+ std::unordered_map<std::string, std::vector<uint8_t>>
+         PicoemuPipeManager::sPendingMap = {};
+-std::mutex PicoemuPipeManager::sPicoPipeMapLock;
++std::recursive_mutex PicoemuPipeManager::sPicoPipeMapLock;
++uint64_t PicoemuPipeManager::sInputEpoch = 1;
+ std::unordered_map<std::string, std::vector<PicoemuPipe::GuestPicoemuCallback>>
+         PicoemuPipeManager::sCallbackMap = {};
+ std::mutex PicoemuPipeManager::sCallbackMapLock;
+@@ -139,6 +140,9 @@ int PicoemuPipe::onGuestSend(const AndroidPipeBuffer* buffers,
+     for (int i = 0; i < numBuffers; i++) {
+         const AndroidPipeBuffer* buf = buffers + i;
+         total += buf->size;
++        if (std::string_view(name()) == "emuqtcommand" && buf->size >= 4 &&
++            buf->data[0] == 0 && buf->data[1] == 0 && buf->data[2] == 0 && buf->data[3] == 0)
++            PicoemuPipeManager::invalidateInput();
+         std::vector<PicoemuPipe::GuestPicoemuCallback> callbacks;
+         PicoemuPipeManager::getGuestPicoemuCallback(this->name(), &callbacks);
+         LOG(DEBUG) << "guest->host, name=" << this->name()
+@@ -198,18 +202,25 @@ AndroidPipe* PicoemuPipe::Service::create(void* hwPipe,
+ }
+ 
+ PicoemuPipe::WritingState::WritingState()
+-    : inProgress(&states[0]), queued(&states[1]) {}
++    : inProgress(&states[0]), queued(&states[1]) {
++    inProgress->dataSizeTransferred = true; queued->dataSizeTransferred = true;
++}
+ 
+ void PicoemuPipe::WritingState::queueContents(const uint8_t* buf, size_t len) {
+     std::lock_guard<std::mutex> l(lock);
+ 
+-    if (inProgress->isFinished())
+-        std::swap(inProgress, queued);
+-
+-    queued->buffer.assign(buf, buf + len);
+-    queued->dataSizeTransferred = false;
+-    queued->dataSize = len;
+-    queued->processedBytes = 0;
++    // Coalesce only matching state identities, never unrelated hands/controls.
++    size_t identity = len == 168 ? 8 : 0;
++    if (identity) {
++        for (auto& item : pending) {
++            if (item.size() == len && std::memcmp(item.data(), buf, identity) == 0) {
++                item.assign(buf, buf + len); return;
++            }
++        }
++    }
++    // Other vendor streams keep their original latest-value behavior.
++    if (!identity && len != 12) pending.clear();
++    pending.emplace_back(buf, buf + len);
+ }
+ 
+ PicoemuPipe::ReadWriteState* PicoemuPipe::WritingState::pickStateWithData() {
+@@ -217,8 +228,10 @@ PicoemuPipe::ReadWriteState* PicoemuPipe::WritingState::pickStateWithData() {
+     if (!inProgress->isFinished()) {
+         return inProgress;
+     }
+-    if (!queued->isFinished()) {
+-        std::swap(inProgress, queued);
++    if (!pending.empty()) {
++        inProgress->buffer = std::move(pending.front()); pending.pop_front();
++        inProgress->dataSize = inProgress->buffer.size();
++        inProgress->processedBytes = 0; inProgress->dataSizeTransferred = false;
+         return inProgress;
+     }
+     return nullptr;
+@@ -228,13 +241,14 @@ void PicoemuPipe::WritingState::clearQueued() {
+     std::lock_guard<std::mutex> l(lock);
+     // These two operations together indicate that there's nothing to transfer,
+     // so it won't get picked for sending.
++    pending.clear();
+     queued->reset();
+     queued->dataSizeTransferred = true;
+ }
+ 
+ bool PicoemuPipe::WritingState::hasData() const {
+     std::lock_guard<std::mutex> l(lock);
+-    return !inProgress->isFinished() || !queued->isFinished();
++    return !inProgress->isFinished() || !pending.empty();
+ }
+ 
+ PicoemuPipe::ReadWriteState::ReadWriteState() {
+@@ -279,7 +293,9 @@ PicoemuPipeManager::~PicoemuPipeManager() {
+ 
+ void PicoemuPipeManager::AddPicoemuPipe(const char* service_name,
+                                         PicoemuPipe* pipe) {
+-    std::lock_guard<std::mutex> lock(sPicoPipeMapLock);
++    std::lock_guard<std::recursive_mutex> lock(sPicoPipeMapLock);
++    ++sInputEpoch;
++    sPendingMap.erase("emucontroller");
+     sPicoPipeMap[service_name] = pipe;
+     auto pending = sPendingMap.find(service_name);
+     if (pending != sPendingMap.end()) {
+@@ -316,17 +332,18 @@ void PicoemuPipeManager::AddPicoemuPipe(const char* service_name,
+ void PicoemuPipeManager::sendGuestPicoemuContents(const char* service_name,
+                                                   const uint8_t* buf,
+                                                   size_t len) {
+-    std::lock_guard<std::mutex> lock(sPicoPipeMapLock);
++    std::lock_guard<std::recursive_mutex> lock(sPicoPipeMapLock);
+     auto pipe = sPicoPipeMap.find(service_name);
+     if (pipe != sPicoPipeMap.end()) {
+         pipe->second->sendGuestPicoemuContents(buf, len);
+     } else {
+-        sPendingMap[service_name].assign(buf, buf + len);
++        if (std::string_view(service_name) != "emucontroller")
++            sPendingMap[service_name].assign(buf, buf + len);
+     }
+ }
+ 
+ PicoemuPipe* PicoemuPipeManager::getPicoPipe(const char* service_name) {
+-    std::lock_guard<std::mutex> lock(sPicoPipeMapLock);
++    std::lock_guard<std::recursive_mutex> lock(sPicoPipeMapLock);
+     auto it = sPicoPipeMap.find(service_name);
+     if (it != sPicoPipeMap.end()) {
+         return it->second;
+@@ -335,9 +352,11 @@ PicoemuPipe* PicoemuPipeManager::getPicoPipe(const char* service_name) {
+ }
+ 
+ void PicoemuPipeManager::closePicoPipe(PicoemuPipe* pipe) {
+-    std::lock_guard<std::mutex> lock(sPicoPipeMapLock);
++    std::lock_guard<std::recursive_mutex> lock(sPicoPipeMapLock);
+     for (auto it = sPicoPipeMap.begin(); it != sPicoPipeMap.end(); ++it) {
+         if (it->second == pipe) {
++            ++sInputEpoch;
++            sPendingMap.erase("emucontroller");
+             sPicoPipeMap.erase(it);
+             break;
+         }
+@@ -386,3 +405,36 @@ void android_init_picoemu_pipe() {
+     android::emulation::registerPicoemuPipeService("emuhandstate");
+     android::emulation::registerPicoemuPipeService("emuqtcommand");
+ }
++
++namespace android { namespace emulation {
++uint64_t PicoemuPipeManager::beginInputFrame() { sPicoPipeMapLock.lock(); return sInputEpoch; }
++void PicoemuPipeManager::endInputFrame() { sPicoPipeMapLock.unlock(); }
++bool PicoemuPipeManager::inputReady() {
++    std::lock_guard<std::recursive_mutex> lock(sPicoPipeMapLock);
++    return sPicoPipeMap.count("emusixdof") && sPicoPipeMap.count("emucontroller") && sPicoPipeMap.count("emuqtcommand");
++}
++void PicoemuPipeManager::clearInputQueue() {
++    std::lock_guard<std::recursive_mutex> lock(sPicoPipeMapLock);
++    for (auto name : {"emucontroller", "emusixdof", "emuqtcommand"}) {
++        sPendingMap.erase(name);
++        auto it=sPicoPipeMap.find(name);
++        if (it!=sPicoPipeMap.end()) it->second->mGuestWriteState.clearQueued();
++    }
++}
++void PicoemuPipeManager::invalidateInput() {
++    std::lock_guard<std::recursive_mutex> lock(sPicoPipeMapLock);
++    ++sInputEpoch; clearInputQueue();
++}
++}}
++
++namespace android { namespace emulation {
++size_t PicoemuPipe::WritingState::pendingPackets() const {
++    std::lock_guard<std::mutex> l(lock); return pending.size();
++}
++bool PicoemuPipeManager::inputCapacity() {
++    std::lock_guard<std::recursive_mutex> lock(sPicoPipeMapLock);
++    auto it=sPicoPipeMap.find("emucontroller");
++    // Reserve ample space for one complete two-hand update and timed releases.
++    return it!=sPicoPipeMap.end() && it->second->mGuestWriteState.pendingPackets()<128;
++}
++}}
+diff --git a/android/emu/hardware/test/android/emulation/PicoemuPipe_unittest.cpp b/android/emu/hardware/test/android/emulation/PicoemuPipe_unittest.cpp
+new file mode 100644
+index 00000000..03f7f2db
+--- /dev/null
++++ b/android/emu/hardware/test/android/emulation/PicoemuPipe_unittest.cpp
+@@ -0,0 +1,100 @@
++// Copyright 2026 Koma Studios. Licensed under the Apache License, Version 2.0.
++#include "android/emulation/PicoemuPipe.h"
++#include <gtest/gtest.h>
++#include <array>
++#include <cstring>
++#include <future>
++namespace android {
++namespace emulation {
++class PicoemuPipeQueueTest : public ::testing::Test {
++protected:
++    using Queue = PicoemuPipe::WritingState;
++    using Packet = PicoemuPipe::ReadWriteState;
++    static void consume(Packet* packet) {
++        packet->dataSizeTransferred = true;
++        packet->processedBytes = packet->dataSize;
++    }
++    static std::array<int32_t, 3> control(int hand, int code, int value) {
++        return {hand, code, value};
++    }
++    template <class T>
++    static void push(Queue& queue, const T& value) {
++        queue.queueContents(reinterpret_cast<const uint8_t*>(&value),
++                            sizeof(value));
++    }
++};
++TEST_F(PicoemuPipeQueueTest, EmptyQueueHasNoPhantomFrame) {
++    Queue q;
++    EXPECT_FALSE(q.hasData());
++    EXPECT_EQ(q.pickStateWithData(), nullptr);
++}
++TEST_F(PicoemuPipeQueueTest, ButtonEdgesAreFifoAcrossHands) {
++    Queue q;
++    auto down = control(0, 17, 1), other = control(1, 2, 1),
++         up = control(0, 17, 0);
++    push(q, down);
++    push(q, other);
++    push(q, up);
++    for (auto expected : {down, other, up}) {
++        auto p = q.pickStateWithData();
++        ASSERT_NE(p, nullptr);
++        EXPECT_EQ(p->buffer.size(), sizeof(expected));
++        EXPECT_EQ(std::memcmp(p->buffer.data(), &expected, sizeof(expected)),
++                  0);
++        consume(p);
++    }
++    EXPECT_FALSE(q.hasData());
++}
++TEST_F(PicoemuPipeQueueTest, PosesCoalesceOnlySameDevice) {
++    Queue q;
++    std::array<int64_t, 21> hmd{}, left{}, right{};
++    left[0] = 1;
++    right[0] = 2;
++    push(q, hmd);
++    push(q, left);
++    push(q, right);
++    hmd[1] = 99;
++    push(q, hmd);
++    EXPECT_EQ(q.pendingPackets(), 3u);
++    for (auto expected : {hmd, left, right}) {
++        auto p = q.pickStateWithData();
++        ASSERT_NE(p, nullptr);
++        EXPECT_EQ(std::memcmp(p->buffer.data(), &expected, sizeof(expected)),
++                  0);
++        consume(p);
++    }
++}
++TEST_F(PicoemuPipeQueueTest, ClearingThenForcedUpPreservesInProgressPacket) {
++    Queue q;
++    auto down = control(0, 17, 1), up = control(0, 17, 0);
++    push(q, down);
++    auto inProgress = q.pickStateWithData();
++    ASSERT_NE(inProgress, nullptr);
++    push(q, up);
++    q.clearQueued();
++    push(q, up);  // expiry/ownership cleanup MUST re-emit UP
++    EXPECT_EQ(q.pickStateWithData(), inProgress);
++    consume(inProgress);
++    auto next = q.pickStateWithData();
++    ASSERT_NE(next, nullptr);
++    EXPECT_EQ(std::memcmp(next->buffer.data(), &up, sizeof(up)), 0);
++}
++TEST_F(PicoemuPipeQueueTest, EpochInvalidationCannotInterleaveInputFrame) {
++    using namespace std::chrono;
++    auto before = PicoemuPipeManager::beginInputFrame();
++    std::promise<void> started;
++    auto start = started.get_future();
++    auto task = std::async(std::launch::async, [&] {
++        started.set_value();
++        PicoemuPipeManager::invalidateInput();
++    });
++    start.wait();
++    EXPECT_EQ(task.wait_for(milliseconds(10)), std::future_status::timeout);
++    PicoemuPipeManager::endInputFrame();
++    task.get();
++    auto after = PicoemuPipeManager::beginInputFrame();
++    PicoemuPipeManager::endInputFrame();
++    EXPECT_GT(after, before);
++}
++}  // namespace emulation
++}  // namespace android

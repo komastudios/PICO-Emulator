@@ -91,6 +91,9 @@ COPY scripts/container-build.sh scripts/build-sync.sh scripts/build-trim.sh \
 COPY scripts/lib/build-env.sh /opt/pico/scripts/lib/build-env.sh
 COPY manifests /opt/pico/manifests
 COPY revisions.lock revisions-debug.lock /opt/pico/
+COPY native/patch.lock /opt/pico/native/patch.lock
+COPY patches/pico-native-automation.patch /opt/pico/patches/pico-native-automation.patch
+COPY scripts/apply-native-patch.sh /opt/pico/scripts/apply-native-patch.sh
 RUN chmod 0755 /opt/pico/scripts/*.sh
 RUN MANIFEST_URL="${MANIFEST_URL}" \
     MANIFEST_BRANCH="${MANIFEST_BRANCH}" \
@@ -145,6 +148,9 @@ COPY scripts/container-build.sh scripts/build-sync.sh scripts/build-compile.sh \
 COPY scripts/lib/build-env.sh /opt/pico/scripts/lib/build-env.sh
 COPY manifests /opt/pico/manifests
 COPY revisions.lock revisions-debug.lock /opt/pico/
+COPY native/patch.lock /opt/pico/native/patch.lock
+COPY patches/pico-native-automation.patch /opt/pico/patches/pico-native-automation.patch
+COPY scripts/apply-native-patch.sh /opt/pico/scripts/apply-native-patch.sh
 RUN chmod 0755 /opt/pico/scripts/*.sh && \
     ln -sf /opt/pico/scripts/container-build.sh /usr/local/bin/container-build.sh
 

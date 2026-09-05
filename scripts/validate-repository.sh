@@ -6,6 +6,8 @@ cd "$repo_dir"
 
 required=(
   README.md MANIFEST.md Taskfile.yml
+  native/patch.lock native/proto/pico_automation.proto
+  patches/pico-native-automation.patch scripts/apply-native-patch.sh
   docs/build-pipeline.md docs/host-install.md
   patches/README.md
   Containerfile .containerignore

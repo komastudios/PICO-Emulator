@@ -83,6 +83,17 @@ if [ -f "$exclude_file" ]; then
   printf 'Excluded %s projects from the manifest (%s)\n' "${#excluded_paths[@]}" "$exclude_file"
 fi
 
+# Remove only our exact prior overlay before repo sync; unrelated edits remain
+# visible to repo and are never reset here. Archives have no .git and use compile.
+if [ -f "$src/.pico-native-patch" ]; then
+  patch="$here/../patches/pico-native-automation.patch"
+  old="$(cat "$src/.pico-native-patch")"
+  now="$(sha256sum "$patch" | cut -d' ' -f1)"
+  [ "$old" = "$now" ] || { echo 'Native overlay changed; use a fresh sync cache.' >&2; exit 1; }
+  git -C external/qemu apply --reverse --check "$patch"
+  git -C external/qemu apply --reverse "$patch"
+  rm "$src/.pico-native-patch"
+fi
 repo sync -c -d -j"$JOBS" --force-sync --no-clone-bundle
 repo forall -c 'git lfs pull'
 
