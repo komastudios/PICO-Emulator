@@ -387,10 +387,10 @@ index 00000000..1a2b65e1
 +}  // namespace pico
 diff --git a/android/android-grpc/services/pico-automation/proto/pico_automation.proto b/android/android-grpc/services/pico-automation/proto/pico_automation.proto
 new file mode 100644
-index 00000000..ac1f6758
+index 00000000..0c8abc4e
 --- /dev/null
 +++ b/android/android-grpc/services/pico-automation/proto/pico_automation.proto
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,89 @@
 +syntax = "proto3";
 +package pico.automation.v1;
 +import "google/protobuf/empty.proto";
@@ -446,7 +446,8 @@ index 00000000..ac1f6758
 +// Presence replaces this hand's controls; omitted pose preserves its pose.
 +message HandState {
 +  Pose pose = 1;
-+  double stick_x = 2; double stick_y = 3; // [-1,1]
++  // Guest XR X/Y axes in [-1,1]; vendor wire codes are 16/15 respectively.
++  double stick_x = 2; double stick_y = 3;
 +  double trigger = 4; double grip = 5; // [0,1]
 +  repeated Button buttons_down = 6;
 +}
@@ -568,10 +569,10 @@ index 8d96649b..878caa99 100644
      handleMouseEvent(kEventMouseMotion, kMouseButtonLeft,
 diff --git a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-automation.cpp b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-automation.cpp
 new file mode 100644
-index 00000000..0e1a40d8
+index 00000000..719c8322
 --- /dev/null
 +++ b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-automation.cpp
-@@ -0,0 +1,505 @@
+@@ -0,0 +1,511 @@
 +// Copyright 2026 Koma Studios. Licensed under the Apache License, Version 2.0.
 +#include "android/skin/qt/pico-automation.h"
 +#include <QApplication>
@@ -766,8 +767,8 @@ index 00000000..0e1a40d8
 +        auto axis = [](int x) {
 +            return x < 128 ? (x - 128) / 128.0 : (x - 128) / 127.0;
 +        };
-+        value->set_stick_x(axis(c->mInputControls[hand][15]));
-+        value->set_stick_y(axis(c->mInputControls[hand][16]));
++        value->set_stick_x(axis(c->mInputControls[hand][16]));
++        value->set_stick_y(axis(c->mInputControls[hand][15]));
 +        const auto& p = c->mIndependentStates[hand].pose;
 +        poseToProto(QVector3D(p.x, p.y, p.z),
 +                    QQuaternion(p.rw, p.rx, p.ry, p.rz),
@@ -797,8 +798,9 @@ index 00000000..0e1a40d8
 +        return x < 0 ? int(std::lround(128 + x * 128))
 +                     : int(std::lround(128 + x * 127));
 +    };
-+    send(15, axis(h.stick_x()));
-+    send(16, axis(h.stick_y()));
++    // Vendor runtime interprets wire rocker 16 as guest X, 15 as guest Y.
++    send(16, axis(h.stick_x()));
++    send(15, axis(h.stick_y()));
 +}
 +void PicoAutomation::setKeyboard(const p::KeyboardState& value) {
 +    std::set<unsigned> old(mState.keyboard().linux_key_codes_down().begin(),
@@ -1004,6 +1006,11 @@ index 00000000..0e1a40d8
 +                    setKeyboard(a.keyboard());
 +                }
 +                if (a.connection() != p::CONNECTION_UNCHANGED) {
++                    // Preserve this selection in subsequent START_CONTROLLER_TRACKING.
++                    mOwner->controllerKeyOpen = a.connection() == p::CONNECT_BOTH;
++                    if (!mOwner->controllerKeyOpen)
++                        mOwner->mOnlineHand = static_cast<EmuHand>(int(a.connection()) - 1);
++                    mOwner->mTrackingMode = TrackingMode::CONTROLLER_TRACKING;
 +                    mOwner->controllerSimulator()->connectController(
 +                            int(a.connection()) - 1);
 +                    mState.set_connection(a.connection());
@@ -1403,18 +1410,21 @@ index a6a0aefe..6e355c99 100644
 +
 +bool PicoUiCommandHandle::automationOwned() const { return mAutomation && mAutomation->owned(); }
 diff --git a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-ui-command-handle.h b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-ui-command-handle.h
-index edf0ff4a..05fd5e92 100644
+index edf0ff4a..65e15cb2 100644
 --- a/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-ui-command-handle.h
 +++ b/android/android-ui/modules/aemu-ui-qt/src/android/skin/qt/pico-ui-command-handle.h
-@@ -42,6 +42,7 @@ class EmulatorQtWindow;
+@@ -42,8 +42,10 @@ class EmulatorQtWindow;
  class PicoControllerSimulator;
  class PicoHMDSimulator;
  class PicoEyeHandSimulator;
 +class PicoAutomation;
  
  class PicoUiCommandHandle : public QObject {
++    friend class PicoAutomation;
      Q_OBJECT
-@@ -61,6 +62,7 @@ public:
+ public:
+     PicoUiCommandHandle(EmulatorQtWindow* emulatorWindow, QObject* parent);
+@@ -61,6 +63,7 @@ public:
      void handleQtWheelEvent(QWheelEvent* event);
      void handleGestureEvent(const QGestureEvent& event);
  
@@ -1422,7 +1432,7 @@ index edf0ff4a..05fd5e92 100644
      bool isKeyboardInputOpen() { return keyboardInputOpen; }
      bool isControllerKeyOpen() { return controllerKeyOpen; }
      bool isStartedFromIDE() { return startedFromIDE; }
-@@ -93,6 +95,7 @@ private:
+@@ -93,6 +96,7 @@ private:
      PicoEyeHandSimulator* mEyeHandSimulator;
      PicoHMDSimulator* mHMDSimulator;
  

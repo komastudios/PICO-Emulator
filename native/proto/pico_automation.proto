@@ -53,7 +53,8 @@ enum Button {
 // Presence replaces this hand's controls; omitted pose preserves its pose.
 message HandState {
   Pose pose = 1;
-  double stick_x = 2; double stick_y = 3; // [-1,1]
+  // Guest XR X/Y axes in [-1,1]; vendor wire codes are 16/15 respectively.
+  double stick_x = 2; double stick_y = 3;
   double trigger = 4; double grip = 5; // [0,1]
   repeated Button buttons_down = 6;
 }

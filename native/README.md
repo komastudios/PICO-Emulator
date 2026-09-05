@@ -84,3 +84,10 @@ and checks autonomous expiry. `live-epoch.py` uses only the vendor-defined
 `sys.emu_pipe_service.state=2` restart property; it fails honestly if denied.
 The tests do not restore app navigation caused by a real trigger. Present Pose
 messages require both position and orientation, including position:{} at origin.
+
+Axis correction (2026-09-06): stick_x/State.stick_x now map to guest XR X
+(wire rocker 16), and stick_y to guest XR Y (wire rocker 15), with unchanged
+sign and quantization. Explicit Apply connection selection also updates Qt's
+controller tracking selection, so subsequent START_CONTROLLER_TRACKING uses
+both hands for CONNECT_BOTH. This is not a guest connection acknowledgment;
+live left-controller acceptance remains pending. This candidate is not deployed.
